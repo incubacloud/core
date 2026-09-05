@@ -6,6 +6,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.0.111] — 2026-09-06
+
+### Fixed
+
+- **A sleeping instance read as running, and everything behind that flag stopped happening.** `running` was derived from "has any container of this instance been seen recently", and an instance put to sleep keeps its database and backup containers up — so the answer was yes all night and the flag never fell. It now asks about the `odoo` container specifically, which is what `running` has always meant and what the SSH probe measures. Measured against production: five free tenants, four of them asleep, all six reported running. Downstream, none of them was ever marked sleeping, and the activity clock behind the 14-day auto-suspend was being refreshed as though somebody had visited. Three fail-safes, not two: a fleet that reports containers but not one `odoo` among them is a broken query far more plausibly than every instance stopping at once, and changes nothing.
+
+- **The instance card showed one reading printed once per service.** Every service dot was drawn from the single `running` flag, so `db` and `odoo` could never disagree and a stopped companion was invisible. The health probe has always computed the state of each container and threw it away after alerting on it; it is now kept in `service_states` and the card draws each dot from its own reading, falling back to the old behaviour until the first probe lands.
+
+### Added
+
+- **"Asleep" is now a thing the panel can say.** Being down on purpose and being down are not the same thing to show an operator, and until now both read as "Stopped". Instances answer `_stop_is_expected` — always False here, since base knows of no legitimate reason for a deployed instance to be stopped — and the layer that schedules sleep overrides it.
+
+- **An alert when one of our scheduled actions is switched off and stays off.** A cron that is off raises nothing and queues nothing; the work simply never happens. A deploy pauses these for the length of its window and a run that was killed rather than aborted never resumed them: twenty-three of the manager's twenty-four scheduled actions stayed off for five days, the nightly backup of the free pool's host among them, with nothing to report it. The rule is "has run before, is off now, and has been for longer than a deploy window" — no list of what should be running, which would drift away from what the modules declare.
+
+---
+
 ## [1.0.110] — 2026-09-05
 
 ### Fixed

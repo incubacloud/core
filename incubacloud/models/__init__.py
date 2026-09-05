@@ -23,6 +23,7 @@ from . import cloud_github_credential_service
 from . import cloud_project_repo
 from . import cloud_instance_repo
 from . import cloud_alert
+from . import ir_cron_watch
 from . import cloud_metric_rule
 from . import cloud_host
 from . import cloud_host_whitelist
