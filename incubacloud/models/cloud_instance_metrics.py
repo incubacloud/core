@@ -5,8 +5,9 @@ per instance every few minutes, the telemetry that does not scale past
 ~100 targets. This is its replacement: the same fact read from cAdvisor,
 which the agents already report.
 
-**Why cAdvisor and not Traefik.** ``running`` means *the stack exists and
-is up*. "Is anyone using it" is a different fact, already modelled by
+**Why cAdvisor and not Traefik.** ``running`` means *the instance's
+``odoo`` container is up*, which is the same thing the SSH probe
+measures. "Is anyone using it" is a different fact, already modelled by
 ``sleeping`` (decided by Sablier from real traffic) and by
 ``last_activity_at``. If ``running`` were sourced from request traffic, a
 healthy but idle instance would read as not-running, and the 14-day
@@ -36,6 +37,29 @@ _SEEN_WINDOW_SECONDS = 180
 #: ``running``. Comfortably above the liveness cron's own period so one
 #: skipped tick does not hand the flag back and forth.
 _LIVENESS_HANDOVER_SECONDS = 900
+
+#: The compose service whose container decides whether an instance is up.
+#: Every other container of the stack can be running while this one is
+#: not — that is exactly what a sleeping tenant looks like.
+_ODOO_SERVICE = "odoo"
+
+#: Which instances the backend reports on at all, by any container of
+#: theirs. Not a liveness answer: it says whose telemetry reaches us,
+#: and therefore whose ``running`` may be written at all.
+_COVERAGE_EXPRESSION = (
+    "max by (instance_id) (time() - container_last_seen{"
+    'instance_id!=""})'
+)
+
+#: How long since each instance's ``odoo`` container was reported. The
+#: service label is there because the agents are started with
+#: ``com.docker.compose.service`` whitelisted (see host_observability).
+_ODOO_EXPRESSION = (
+    "max by (instance_id) (time() - container_last_seen{"
+    'instance_id!="", '
+    f'container_label_com_docker_compose_service="{_ODOO_SERVICE}"'
+    "})"
+)
 
 
 class CloudInstance(models.Model):
@@ -92,17 +116,64 @@ class CloudInstance(models.Model):
         return age <= _LIVENESS_HANDOVER_SECONDS
 
     @api.model
+    def _ages_by_instance(self, base, expression, user, token):
+        """Return ``{instance id: seconds since last seen}``, or ``None``.
+
+        ``None`` is "the question could not be asked" — a transport or
+        protocol failure — and callers must treat it as unknown rather
+        than as an answer. An empty dict is a real answer: the backend
+        replied and nothing matched.
+
+        :param str base: metrics backend root
+        :param str expression: PromQL returning one sample per instance
+        :param str user: metrics account this panel authenticates as
+        :param str token: password half of that credential
+        :rtype: dict | None
+        """
+        try:
+            samples = promql_query(base, expression, token=token, user=user)
+        except Exception as exc:  # noqa: BLE001 — logged, never fatal
+            _logger.warning(
+                "[metrics] could not refresh instance liveness: %s", exc,
+            )
+            return None
+
+        ages = {}
+        for labels, age_seconds in samples:
+            raw = (labels or {}).get("instance_id")
+            if not raw:
+                continue
+            try:
+                ages[int(raw)] = age_seconds
+            except (TypeError, ValueError):
+                continue
+        return ages
+
+    @api.model
     def _cron_refresh_running_from_metrics(self):
         """Update ``running`` for instances the metrics backend covers.
 
-        Fail-safe, twice over:
+        Two questions, not one. The first is which instances the backend
+        reports on at all; the second is how long since each one's
+        ``odoo`` container was seen. Only the second decides the flag —
+        ``running`` has always meant *that* container, the same thing the
+        SSH probe measures, and asking about any container of the stack
+        answers a different question. A sleeping tenant keeps its
+        database and backup containers up, so the loose form said "yes"
+        all night and the flag never fell: the sleep/wake tracking that
+        hangs off it never fired, and the panel showed a tenant asleep as
+        running.
+
+        Fail-safe, three times over:
 
         * a backend that cannot be reached updates nothing — silence is
-          not evidence that instances stopped; and
+          not evidence that instances stopped;
         * an instance the backend has never reported on is left untouched
-          rather than marked stopped. Only instances with a known metrics
-          footprint are flipped, so a host whose agents are not installed
-          yet keeps whatever the SSH telemetry says.
+          rather than marked stopped, so a host whose agents are not
+          installed yet keeps whatever the SSH telemetry says; and
+        * a fleet that reports containers but not one ``odoo`` among them
+          is a broken query or a missing label far more plausibly than
+          every instance stopping at once, so that too changes nothing.
         """
         settings = self.env["cloud.settings"].sudo()._get_system()
         if not settings.metrics_enabled:
@@ -112,31 +183,22 @@ class CloudInstance(models.Model):
             return
         user, token = settings._metrics_auth()
 
-        # One sample per instance: the most recent time any of its
-        # containers was seen. ``instance_id`` is attached by the agent's
-        # relabelling (see host_observability.yml).
-        expression = (
-            "max by (instance_id) (time() - container_last_seen{"
-            'instance_id!=""})'
+        covered = self._ages_by_instance(
+            base, _COVERAGE_EXPRESSION, user, token,
         )
-        try:
-            samples = promql_query(base, expression, token=token, user=user)
-        except Exception as exc:  # noqa: BLE001 — logged, never fatal
-            _logger.warning(
-                "[metrics] could not refresh instance liveness: %s", exc,
-            )
+        if not covered:
             return
-
-        seen = {}
-        for labels, age_seconds in samples:
-            raw = (labels or {}).get("instance_id")
-            if not raw:
-                continue
-            try:
-                seen[int(raw)] = age_seconds
-            except (TypeError, ValueError):
-                continue
-        if not seen:
+        odoo_ages = self._ages_by_instance(
+            base, _ODOO_EXPRESSION, user, token,
+        )
+        if odoo_ages is None:
+            return
+        if not odoo_ages:
+            _logger.warning(
+                "[metrics] %d instance(s) report containers but none "
+                "reports an %r container — leaving liveness untouched",
+                len(covered), _ODOO_SERVICE,
+            )
             return
 
         now = fields.Datetime.now()
@@ -147,9 +209,12 @@ class CloudInstance(models.Model):
         # arrived second lost the row outright. See ``_concurrency``.
         with read_committed_cursor(self.env.registry) as cr:
             env = self.env(cr=cr)
-            instances = env["cloud.instance"].sudo().browse(list(seen)).exists()
+            instances = (
+                env["cloud.instance"].sudo().browse(list(covered)).exists()
+            )
             for inst in instances:
-                running = seen[inst.id] <= _SEEN_WINDOW_SECONDS
+                age = odoo_ages.get(inst.id)
+                running = age is not None and age <= _SEEN_WINDOW_SECONDS
                 vals = {"metrics_last_seen": now}
                 if inst.running != running:
                     vals["running"] = running
