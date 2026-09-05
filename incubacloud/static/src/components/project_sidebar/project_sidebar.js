@@ -156,6 +156,7 @@ export class ProjectSidebar extends Component {
         if (!inst.deployed) return "dot-neutral";
         if (inst.running) return "dot-ok";
         if (inst.status === "error") return "dot-error";
+        if (inst.stop_is_expected) return "dot-asleep";
         return "dot-stopped";
     }
 
@@ -173,6 +174,7 @@ export class ProjectSidebar extends Component {
         if (!inst.deployed) return "draft";
         if (inst.running) return "running";
         if (inst.status === "error") return "crashed";
+        if (inst.stop_is_expected) return "asleep";
         return "stopped";
     }
 

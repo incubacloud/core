@@ -590,6 +590,14 @@ class InstanceHealthExecutor(AbstractSSHExecutor):
         # a sleeping or stopped instance is graded too.
         self._grade_log_health(inst)
 
+        # Keep what the container listing said, rather than only
+        # alerting on it and dropping it. Every branch below returns at
+        # some point, so this is stamped before any of them: the panel
+        # paints one dot per service from it, and a stopped ``db`` next
+        # to a running ``odoo`` used to be invisible there — both dots
+        # came from the single ``running`` flag.
+        inst.write({'service_states': self._service_states})
+
         # Who owns ``running``. Both this probe and the metrics cron can
         # tell whether an instance is up, and with observability on they
         # would otherwise both write the flag on their own schedules —

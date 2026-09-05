@@ -59,6 +59,7 @@ from . import (
     test_behind_cdn,
     test_tls_names,
     test_real_ip,
+    test_service_states,
     test_restore_upload_paths,
     test_transport,
     test_delete_project,

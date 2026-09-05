@@ -1060,6 +1060,10 @@ export class InstanceDetail extends JobsMixin(
     if (!inst.deployed) return _t("Not deployed");
     if (inst.running) return _t("Running");
     if (inst.status === "error") return _t("Error");
+    // Checked after "error" on purpose: an instance whose stop is
+    // expected can still be broken for an unrelated reason, and
+    // "Asleep" would hide it.
+    if (inst.stop_is_expected) return _t("Asleep");
     return _t("Stopped");
   }
 
@@ -1074,7 +1078,33 @@ export class InstanceDetail extends JobsMixin(
     if (!inst.deployed) return "st-pending";
     if (inst.running) return "st-running";
     if (inst.status === "error") return "st-error";
+    if (inst.stop_is_expected) return "st-asleep";
     return "st-stopped";
+  }
+
+  /**
+   * Map one container of this instance to its ``rl-sd`` dot modifier.
+   *
+   * Reads the state the health probe observed for that service. Falls
+   * back to the instance-wide ``running`` flag while nothing has been
+   * observed yet — a freshly created instance, or one whose first probe
+   * has not landed — which is what every dot showed before, so the card
+   * degrades to its old behaviour instead of to a wrong one.
+   *
+   * Only ``odoo`` can be legitimately stopped: a plan that sleeps an
+   * instance stops that container and leaves the rest of the stack up.
+   *
+   * @param {string} svc compose service name, e.g. "odoo" or "db"
+   * @returns {string} "up", "asleep" or "down"
+   */
+  serviceDotClass(svc) {
+    const inst = this.state.inst;
+    if (!inst) return "down";
+    const observed = (inst.service_states || {})[svc];
+    if (observed === undefined) return inst.running ? "up" : "down";
+    if (observed === "running") return "up";
+    if (svc === "odoo" && inst.stop_is_expected) return "asleep";
+    return "down";
   }
 
   // ── Unified job launcher ──────────────────────────────────────────

@@ -223,6 +223,26 @@ class CloudInstance(models.Model):
         "so there is a single source of truth.",
     )
     running = fields.Boolean(string="Running", default=False)
+    service_states = fields.Json(
+        string="Service States",
+        copy=False,
+        readonly=True,
+        help="What each container of the stack was doing when the health "
+        "probe last looked, e.g. {'odoo': 'running', 'db': 'running'}. "
+        "The probe has always known this and only ever raised alerts "
+        "with it; the panel painted one dot per service from the single "
+        "``running`` flag instead, so every service always showed the "
+        "same state. Empty until the first probe lands.",
+    )
+    stop_is_expected = fields.Boolean(
+        string="Stopped On Purpose",
+        compute="_compute_stop_is_expected",
+        help="True when this instance being down is normal rather than "
+        "an incident. Always False here: base knows no reason for a "
+        "deployed instance to be stopped. A layer above may — a plan "
+        "that puts an idle instance to sleep — and answers by "
+        "overriding ``_stop_is_expected``.",
+    )
     custom_remote_dir = fields.Char(
         string="Custom Remote Directory",
         help="Override for the remote directory path. "
@@ -869,6 +889,29 @@ class CloudInstance(models.Model):
     def _compute_deployed(self):
         for inst in self:
             inst.deployed = inst.state in self._ON_HOST_STATES
+
+    def _compute_stop_is_expected(self):
+        """Expose :meth:`_stop_is_expected` to the panel and to views."""
+        for inst in self:
+            inst.stop_is_expected = inst._stop_is_expected()
+
+    def _stop_is_expected(self):
+        """Return whether this instance being down is normal, not broken.
+
+        False here, always: base knows of no legitimate reason for a
+        deployed instance to have stopped, so anything down is an
+        incident and is reported as one. A layer that does know of one —
+        a plan that sleeps an idle instance — overrides this.
+
+        Asking the instance, rather than testing a field base does not
+        have, is what keeps sleeping out of base entirely. Same shape as
+        ``_metric_alerts_suppressed`` and the health probe's
+        ``_odoo_stop_is_expected``, for the same reason.
+
+        :rtype: bool
+        """
+        self.ensure_one()
+        return False
 
     def _transition(self, to_state):
         """Move this instance to *to_state*.

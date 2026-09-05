@@ -1115,6 +1115,8 @@ class CrudMixin:
                     'state': i.state,
                     'deployed': i.deployed,
                     'running': i.running,
+                    'service_states': i.service_states or {},
+                    'stop_is_expected': i.stop_is_expected,
                     'host': i.host_id.name if i.host_id else '',
                     'host_id': i.host_id.id if i.host_id else None,
                     'host_ip': (
@@ -1159,6 +1161,8 @@ class CrudMixin:
                 'state': i.state,
                 'deployed': i.deployed,
                 'running': i.running,
+                'service_states': i.service_states or {},
+                'stop_is_expected': i.stop_is_expected,
                 'host': i.host_id.name if i.host_id else '',
                 'host_id': i.host_id.id if i.host_id else None,
                 'host_ip': (
@@ -1787,6 +1791,8 @@ class CrudMixin:
             'state': inst.state,
             'deployed': inst.deployed,
             'running': inst.running,
+            'service_states': inst.service_states or {},
+            'stop_is_expected': inst.stop_is_expected,
             'auto_rebuild': inst.auto_rebuild,
             'auto_update': inst.auto_update,
             'pending_pushes': [

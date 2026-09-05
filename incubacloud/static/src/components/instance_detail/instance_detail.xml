@@ -115,7 +115,7 @@
                             <h1 class="rl-ptitle">
                                 <t t-esc="state.inst.name" />
                                 <span
-                  t-att-class="'rl-pill ' + (statusClass === 'st-running' ? 'running' : statusClass === 'st-provisioning' ? 'building' : statusClass === 'st-error' ? 'crashed' : statusClass === 'st-pending' ? 'pending' : 'stopped')"
+                  t-att-class="'rl-pill ' + (statusClass === 'st-running' ? 'running' : statusClass === 'st-provisioning' ? 'building' : statusClass === 'st-error' ? 'crashed' : statusClass === 'st-pending' ? 'pending' : statusClass === 'st-asleep' ? 'asleep' : 'stopped')"
                 >
                                     <span class="rl-d" /><t t-esc="statusLabel" />
                                 </span>
@@ -541,7 +541,7 @@
                     >
                                             <div class="rl-svc">
                                                 <span
-                          t-att-class="'rl-sd ' + (state.inst.running ? 'up' : 'down')"
+                          t-att-class="'rl-sd ' + serviceDotClass(svc)"
                         />
                                                 <t t-esc="svc" />
                                             </div>

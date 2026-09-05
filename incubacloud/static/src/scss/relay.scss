@@ -158,6 +158,12 @@
     background:var(--rl-amber); box-shadow:0 0 0 3px var(--rl-amber-soft); animation:rl-pulse 1s infinite; }
   .rl-pill.stopped, .rl-pill.draft, .rl-pill.unknown { color:var(--rl-muted); }
   .rl-pill.stopped .rl-d, .rl-pill.draft .rl-d, .rl-pill.unknown .rl-d { background:var(--rl-faint); }
+  // Down on purpose (a plan that sleeps an idle instance). Amber, so it
+  // reads apart from both "up" and "stopped" at a glance in the sidebar
+  // where there is no label — but still, unlike the amber above, so no
+  // pulse: nothing is in progress, it is resting.
+  .rl-pill.asleep { color:var(--rl-muted); }
+  .rl-pill.asleep .rl-d { background:var(--rl-amber); box-shadow:0 0 0 3px var(--rl-amber-soft); }
   .rl-pill.crashed, .rl-pill.failed, .rl-pill.error, .rl-pill.deleted { color:var(--rl-red-text); }
   .rl-pill.crashed .rl-d, .rl-pill.failed .rl-d, .rl-pill.error .rl-d, .rl-pill.deleted .rl-d {
     background:var(--rl-red); box-shadow:0 0 0 3px var(--rl-red-soft); }
@@ -249,7 +255,8 @@
   .rl-svc { display:flex; align-items:center; gap:7px; font-family:var(--rl-fm); font-size:11.5px; color:var(--rl-fg2);
     .rl-sd { width:7px; height:7px; border-radius:50%; }
     .rl-sd.up { background:var(--rl-green); box-shadow:0 0 0 3px var(--rl-green-soft); }
-    .rl-sd.down { background:var(--rl-faint); } }
+    .rl-sd.down { background:var(--rl-faint); }
+    .rl-sd.asleep { background:var(--rl-amber); box-shadow:0 0 0 3px var(--rl-amber-soft); } }
 
   // ── Timeline (recent activity) ───────────────────────────────────────────
   .rl-tlh { font-family:var(--rl-fm); font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--rl-muted); margin-block-start:0; margin-inline:0; margin-block-end:12px; }
