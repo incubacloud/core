@@ -6,6 +6,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.0.114] — 2026-09-06
+
+### Fixed
+
+- **The job that retires stored certificates did not check that it had.** The write reports the exit status of a shell redirection, which succeeds over a store that ends up truncated and says nothing about whether the proxy came back — so the job could report success while the host went on serving exactly the certificates it was told to stop serving, which is the silence the retirement exists to end. It now reads the store back once the proxy is up and fails the job if a retired name is still there, if the document does not parse, or if it cannot be read at all. Reading it through the container also answers a question nothing asked before: a container that is not running cannot be read from, so a restart that did not take is now a failure rather than a green step.
+
+- **The scheduled-action watchdog cried wolf on every deploy.** It measured how long a cron had been stopped from `lastcall` — when it last *ran* — so a cron that runs once a day was six hours stale while working perfectly, and the deploy pipeline pausing it for a few minutes was enough to report it. Measured on 6 September: one alert naming twenty-nine scheduled actions, raised mid-window, with the fleet healthy. Noise on this particular alert is expensive, because it is the only thing that notices work silently not happening. It now measures against `nextcall` — when the cron was due to run next — which a pause leaves untouched: a daily cron paused during a deploy window is still hours from due and says nothing, while one left switched off falls behind and speaks up. Crons that have never run stay excluded, as before.
+
+---
+
 ## [1.0.113] — 2026-09-06
 
 ### Fixed

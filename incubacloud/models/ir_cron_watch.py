@@ -28,10 +28,10 @@ from odoo import api, fields, models
 
 _logger = logging.getLogger(__name__)
 
-#: How long a cron may sit switched off before it is worth saying so.
-#: The deploy pipeline switches these off on purpose for the length of
-#: its window, which is minutes; anything still off hours later was not
-#: switched back on, and that is the case worth an alert.
+#: How far past its own next run a cron may sit before it is worth
+#: saying so. The deploy pipeline switches these off on purpose for the
+#: length of its window, which is minutes; a cron still overdue hours
+#: later was not switched back on, and that is the case worth an alert.
 STOPPED_GRACE_HOURS = 6
 
 #: Modules whose scheduled actions belong to us. Odoo's own crons are
@@ -52,15 +52,30 @@ class IrCron(models.Model):
 
     @api.model
     def _disabled_platform_crons(self):
-        """Return our inactive crons that used to run, newest stop first.
+        """Return our inactive crons that are overdue, furthest first.
 
         Read with ``sudo`` and through the ``active_test`` context: the
         whole point is to find rows the default domain hides.
 
-        A cron switched off within the grace window is not reported —
-        that is what a deploy in progress looks like from here, and
-        alerting on our own maintenance would train everyone to ignore
-        this.
+        Overdue is measured against ``nextcall`` — when this cron was
+        due to run next — and never against ``lastcall``. That was the
+        original rule and it was wrong in a way only production shows:
+        ``lastcall`` says how long ago it *ran*, so a cron that runs
+        once a day is always "six hours stale" by that measure, and
+        every deploy that paused one raised an alert naming all of
+        them. Measured on 6 September: twenty-nine of them, mid-window,
+        with the fleet healthy. Alerting on our own maintenance is how
+        this alert stops being read.
+
+        ``nextcall`` answers the question actually being asked. Odoo
+        advances it whenever the cron runs, and a paused cron keeps the
+        one it had — so during a deploy window a daily cron is still
+        hours from due and says nothing, while one left switched off
+        falls behind and speaks up.
+
+        Still requires ``lastcall``: a cron that has never run is off
+        because it ships that way (the secret rotation is opt-in), and
+        turning it on would be a decision rather than a repair.
 
         :rtype: recordset of ``ir.cron``
         """
@@ -76,8 +91,9 @@ class IrCron(models.Model):
         )
         cutoff = fields.Datetime.now() - timedelta(hours=STOPPED_GRACE_HOURS)
         return crons.filtered(
-            lambda c: not c.active and c.lastcall and c.lastcall < cutoff
-        ).sorted(key=lambda c: c.lastcall, reverse=True)
+            lambda c: not c.active and c.lastcall and c.nextcall
+            and c.nextcall < cutoff
+        ).sorted(key=lambda c: c.nextcall, reverse=True)
 
     @api.model
     def _cron_check_disabled(self):
@@ -102,7 +118,7 @@ class IrCron(models.Model):
             return 0
 
         names = stopped.mapped("cron_name")
-        oldest = min(stopped.mapped("lastcall"))
+        oldest = min(stopped.mapped("nextcall"))
         vals = {
             "code": ALERT_CODE,
             "level": "warning",
@@ -110,7 +126,7 @@ class IrCron(models.Model):
                 f"{len(stopped)} scheduled action(s) of the platform are "
                 f"switched off and are not running: {', '.join(names[:5])}"
                 + (f" and {len(names) - 5} more" if len(names) > 5 else "")
-                + f". The earliest stopped on {oldest}."
+                + f". The furthest behind was due to run on {oldest}."
             ),
             "payload": {
                 "crons": [
@@ -118,6 +134,7 @@ class IrCron(models.Model):
                         "id": cron.id,
                         "name": cron.cron_name,
                         "last_run": str(cron.lastcall),
+                        "due": str(cron.nextcall),
                     }
                     for cron in stopped
                 ],

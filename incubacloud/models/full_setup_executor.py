@@ -255,6 +255,13 @@ class FullSetupExecutor(
         if prune:
             labels = [label for label, *_ in commands]
             commands.insert(labels.index("Start Traefik"), prune)
+            # And read it back once the proxy is up: the write reports
+            # the exit status of a redirection, not what the store ends
+            # up holding.
+            labels = [label for label, *_ in commands]
+            commands.insert(
+                labels.index("Start Traefik") + 1, self._acme_confirm_step(),
+            )
         return commands
 
     def parse_results(self, results):
@@ -336,6 +343,14 @@ class FullSetupExecutor(
                     f" (exit {exit_status})"
                 )
                 self._sys(f"✗ Whitelist: {label} failed")
+
+        # ── Certificates retired from the store, if any ───────────────
+        # Only ever present on a re-run; the write step reports the exit
+        # status of a redirection, not what the store ends up holding.
+        acme = self._acme_prune_errors(results)
+        for problem in acme:
+            self._sys(f"✗ {problem}")
+        errors += acme
 
         return errors
 

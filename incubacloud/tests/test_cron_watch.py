@@ -9,8 +9,9 @@ manager's twenty-four scheduled actions stayed off for five days with
 the nightly backup of the free pool's host among them.
 
 What is pinned here is the rule that decides "suspicious", because it is
-the part that could quietly stop matching: a cron that has run before and
-is now off, for longer than a deploy window lasts.
+the part that could quietly stop matching — and did: a cron that has run
+before, is now off, and is past the moment it was next due by longer than
+a deploy window lasts.
 """
 from datetime import timedelta
 
@@ -18,6 +19,9 @@ from odoo import fields
 from odoo.tests.common import TransactionCase
 
 from odoo.addons.incubacloud.models import ir_cron_watch
+
+#: Sentinel for "caller said nothing", so ``False`` stays a value.
+_KEEP = object()
 
 
 class CronWatchCase(TransactionCase):
@@ -81,24 +85,75 @@ class CronWatchCase(TransactionCase):
     def _active_alert(self):
         return self._alerts(state="active")[:1]
 
+    def _switch_off(self, crons, due=_KEEP, ran=_KEEP):
+        """Switch *crons* off the way a database actually holds them.
+
+        Both dates are written every time. The rule reads one of them
+        and excludes on the other, so a test that sets only one is
+        asserting about a row shape that does not occur — which is how
+        the ``lastcall`` rule looked right for months.
+
+        Defaults are applied through a sentinel, not ``or``: ``False``
+        is a meaningful value for ``lastcall`` — it is how a cron that
+        has never run is stored — and ``or`` would quietly replace it
+        with the default, turning that test into a copy of its
+        neighbour.
+
+        :param crons: recordset to switch off
+        :param due: value for ``nextcall``; overdue by default
+        :param ran: value for ``lastcall``; long ago by default
+        """
+        crons.write({
+            "active": False,
+            "lastcall": self.long_ago if ran is _KEEP else ran,
+            "nextcall": self.long_ago if due is _KEEP else due,
+        })
+
 
 class TestWhatCountsAsStopped(CronWatchCase):
 
     def test_a_healthy_fleet_reports_nothing(self):
         self.assertFalse(self._stopped())
 
-    def test_one_of_ours_switched_off_long_ago_is_reported(self):
+    def test_one_of_ours_overdue_is_reported(self):
         cron = self._one_of_ours()
-        cron.write({"active": False, "lastcall": self.long_ago})
+        self._switch_off(cron)
         self.assertIn(cron, self._stopped())
 
-    def test_one_switched_off_just_now_is_not(self):
+    def test_one_not_due_yet_is_not(self):
         """That is what a deploy in progress looks like from here, and
         alerting on our own maintenance is how an alert list stops
         being read."""
         cron = self._one_of_ours()
-        cron.write({"active": False, "lastcall": fields.Datetime.now()})
+        self._switch_off(cron, due=fields.Datetime.now())
         self.assertNotIn(cron, self._stopped())
+
+    def test_a_daily_cron_paused_by_a_deploy_is_not_reported(self):
+        """The case the ``lastcall`` rule got wrong, and the reason it
+        looked right: a cron that runs once a day last ran hours ago
+        *while working perfectly*, so measuring staleness from that
+        reported every one of them the moment a deploy paused it.
+
+        Measured on 6 September — twenty-nine named in one alert,
+        mid-window, with nothing actually wrong. What the question
+        needs is when it was next due, which a pause leaves untouched.
+        """
+        cron = self._one_of_ours()
+        self._switch_off(
+            cron,
+            ran=fields.Datetime.now() - timedelta(hours=24),
+            due=fields.Datetime.now() + timedelta(hours=8),
+        )
+        self.assertNotIn(cron, self._stopped())
+
+    def test_the_same_cron_speaks_up_once_it_falls_behind(self):
+        """The other half of it: a pause nobody undid is exactly what
+        this exists to catch, and it has to still catch it."""
+        cron = self._one_of_ours()
+        self._switch_off(
+            cron, ran=fields.Datetime.now() - timedelta(hours=24),
+        )
+        self.assertIn(cron, self._stopped())
 
     def test_one_that_never_ran_is_not(self):
         """Off since it was installed is a deliberate choice — the
@@ -110,19 +165,23 @@ class TestWhatCountsAsStopped(CronWatchCase):
         exception list would drift away from it.
         """
         cron = self._one_of_ours()
-        cron.write({"active": False, "lastcall": False})
+        self._switch_off(cron, ran=False)
         self.assertNotIn(cron, self._stopped())
 
     def test_an_active_one_is_not_reported_however_old(self):
         cron = self._one_of_ours()
-        cron.write({"active": True, "lastcall": self.long_ago})
+        cron.write({
+            "active": True,
+            "lastcall": self.long_ago,
+            "nextcall": self.long_ago,
+        })
         self.assertNotIn(cron, self._stopped())
 
     def test_odoo_s_own_crons_are_left_alone(self):
         """Several ship disabled by design, and switching one off is a
         configuration choice nobody needs an alert about."""
         theirs = self.env.ref("base.autovacuum_job")
-        theirs.write({"active": False, "lastcall": self.long_ago})
+        self._switch_off(theirs)
         self.assertNotIn(theirs, self._stopped())
 
 
@@ -145,14 +204,14 @@ class TestTheAlert(CronWatchCase):
         )
         crons = self.Cron.browse(data.mapped("res_id"))
         self.assertEqual(len(crons), 3, "need three crons of ours")
-        crons.write({"active": False, "lastcall": self.long_ago})
+        self._switch_off(crons)
 
         self.assertEqual(self.env["ir.cron"]._cron_check_disabled(), 3)
         self.assertEqual(len(self._alerts(state="active")), 1)
 
     def test_the_alert_names_them(self):
         cron = self._one_of_ours()
-        cron.write({"active": False, "lastcall": self.long_ago})
+        self._switch_off(cron)
         self.env["ir.cron"]._cron_check_disabled()
         alert = self._active_alert()
         self.assertIn(cron.cron_name, alert.message)
@@ -162,7 +221,7 @@ class TestTheAlert(CronWatchCase):
 
     def test_switching_them_back_on_dismisses_it(self):
         cron = self._one_of_ours()
-        cron.write({"active": False, "lastcall": self.long_ago})
+        self._switch_off(cron)
         self.env["ir.cron"]._cron_check_disabled()
         self.assertTrue(self._active_alert())
 
@@ -175,7 +234,7 @@ class TestTheAlert(CronWatchCase):
 
     def test_running_twice_does_not_pile_up_alerts(self):
         cron = self._one_of_ours()
-        cron.write({"active": False, "lastcall": self.long_ago})
+        self._switch_off(cron)
         self.env["ir.cron"]._cron_check_disabled()
         self.env["ir.cron"]._cron_check_disabled()
         self.assertEqual(len(self._alerts()), 1)

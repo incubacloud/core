@@ -35,6 +35,11 @@ def _store(main):
     ]}})
 
 
+def _store_json():
+    """Return a store holding nothing — what a full retirement leaves."""
+    return json.dumps({"letsencrypt": {"Certificates": []}})
+
+
 #: Covered by the fixture host's own certificate, so it is served from
 #: that one now and the stored entry is what keeps overriding it.
 STORE_WITH_COVERED = _store("a.edge-exec.example.com")
@@ -399,3 +404,81 @@ class TestFullSetupConverges(AcmePruneCase):
         )
         self.assertNotIn(acme_store.LOCAL_PATH, files)
         self.assertNotIn(self._STEP, dict(executor.get_commands()))
+
+
+class TestTheJobChecksItsOwnWork(AcmePruneCase):
+    """Writing the store is not evidence that the store changed.
+
+    The write step reports the exit status of a redirection. That
+    succeeds over a file that ends up truncated, and says nothing about
+    whether the proxy came back at all — so without a read-back the job
+    reports success while the host goes on serving exactly the
+    certificates it was told to stop serving. Retiring one cannot be
+    undone from behind a CDN, which is why this half is not optional.
+    """
+
+    def _executor_with_store(self, stored):
+        executor, _ = self._prepared(
+            PushTrustedProxiesExecutor, "push_trusted_proxies", stored,
+        )
+        return executor
+
+    def _confirmed(self, executor, stdout, exit_status=0):
+        """Run parse_results over a given read-back of the store."""
+        results = {
+            label: {"stdout": "", "exit_status": 0}
+            for label, *_ in executor.get_commands()
+        }
+        results[acme_store.CONFIRM_LABEL] = {
+            "stdout": stdout, "exit_status": exit_status,
+        }
+        return executor.parse_results(results)
+
+    def test_the_store_is_read_back_after_the_restart(self):
+        executor = self._executor_with_store(STORE_WITH_COVERED)
+        labels = [label for label, *_ in executor.get_commands()]
+        self.assertIn(acme_store.CONFIRM_LABEL, labels)
+        self.assertLess(
+            labels.index("Restart Traefik"),
+            labels.index(acme_store.CONFIRM_LABEL),
+            "reading before the restart proves nothing about what it "
+            "came back holding",
+        )
+
+    def test_an_emptied_store_is_accepted(self):
+        executor = self._executor_with_store(STORE_WITH_COVERED)
+        self.assertEqual(self._confirmed(executor, _store_json()), [])
+
+    def test_a_name_that_survived_fails_the_job(self):
+        executor = self._executor_with_store(STORE_WITH_COVERED)
+        errors = self._confirmed(executor, STORE_WITH_COVERED)
+        self.assertTrue(errors)
+        self.assertIn("a.edge-exec.example.com", errors[0])
+
+    def test_a_store_that_cannot_be_read_fails_the_job(self):
+        """Which is also what a proxy that did not come back looks
+        like: the read goes through the container."""
+        executor = self._executor_with_store(STORE_WITH_COVERED)
+        errors = self._confirmed(executor, "", exit_status=1)
+        self.assertTrue(errors)
+
+    def test_a_store_that_does_not_parse_fails_the_job(self):
+        """Traefik holds no certificates at all from one it cannot
+        read, and answers every handshake with a throwaway."""
+        executor = self._executor_with_store(STORE_WITH_COVERED)
+        self.assertTrue(self._confirmed(executor, "{tru"))
+
+    def test_another_name_left_in_the_store_is_not_our_business(self):
+        """Only what this run set out to retire is checked. A customer
+        domain still reached directly keeps its certificate, and
+        reading that as a failure would fail every healthy run."""
+        executor = self._executor_with_store(STORE_WITH_COVERED)
+        self.assertEqual(
+            self._confirmed(executor, STORE_WITHOUT_COVERED), [],
+        )
+
+    def test_a_run_with_nothing_to_retire_adds_no_check(self):
+        executor = self._executor_with_store(STORE_WITHOUT_COVERED)
+        labels = [label for label, *_ in executor.get_commands()]
+        self.assertNotIn(acme_store.CONFIRM_LABEL, labels)
+        self.assertEqual(executor.parse_results({}), [])

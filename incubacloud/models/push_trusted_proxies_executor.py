@@ -167,10 +167,28 @@ class PushTrustedProxiesExecutor(
             'cd ~/traefik && docker compose -p inverseproxy'
             ' -f inverseproxy.yaml restart proxy',
         ))
+        confirm = self._acme_confirm_step()
+        if confirm:
+            commands.append(confirm)
         firewall = self._refresh_firewall_sets()
         if firewall:
             commands.append(firewall)
         return commands
+
+    def parse_results(self, results):
+        """Fail the job unless the retirement is confirmed on the host.
+
+        The write step reports the exit status of a redirection, which
+        succeeds over a store that ends up truncated and says nothing
+        about the proxy having come back. Without this the job would
+        report success while the host went on serving the certificates
+        it was told to stop serving — the exact silence this whole
+        change exists to end.
+        """
+        return (
+            super().parse_results(results)
+            + self._acme_prune_errors(results)
+        )
 
     async def on_success(self, results):
         """Record what the host is now running, so nothing publishes early.

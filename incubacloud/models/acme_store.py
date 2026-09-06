@@ -14,6 +14,10 @@ the write safe — ``cat`` into the existing file keeps the ``0600`` mode
 Traefik refuses to start without, where moving a new file over it would
 not.
 """
+import json
+
+#: Label of the step that reads the store back once the proxy is up.
+CONFIRM_LABEL = "Confirm the retired certificates are gone"
 
 #: Where the store is mounted inside the proxy container.
 STORE_PATH = "/etc/traefik/acme/acme.json"
@@ -128,3 +132,66 @@ class AcmeStorePruneMixin:
         if not self._acme_retired:
             return None
         return ('Retire stored certificates', WRITE_COMMAND)
+
+    def _acme_confirm_step(self):
+        """Return the command that reads the store back, or ``None``.
+
+        Belongs *after* the proxy has been brought back, and exists
+        because the write step cannot tell whether it worked: it reports
+        the exit status of a redirection, which succeeds against a store
+        that ends up truncated, and says nothing about the proxy having
+        come back at all. Reading through the container answers both —
+        a container that is not running cannot be read from.
+
+        :rtype: tuple | None
+        """
+        if not self._acme_retired:
+            return None
+        return (CONFIRM_LABEL, READ_COMMAND)
+
+    def _acme_prune_errors(self, results):
+        """Return what the read-back says went wrong, if anything.
+
+        Fails on anything short of proof, because the alternative is a
+        job that reports success over a store nobody looked at. A name
+        still present means the write did not take; an unreadable or
+        unparseable store means the proxy did not come back, or came
+        back over a file it cannot use — in which case it holds no
+        certificates at all and answers every handshake with a
+        throwaway.
+
+        :param dict results: ``{label: {'stdout', 'exit_status'}}``
+        :return: error strings, empty when the retirement is confirmed
+        :rtype: list
+        """
+        if not self._acme_retired:
+            return []
+        outcome = results.get(CONFIRM_LABEL)
+        if not outcome or outcome.get('exit_status') != 0:
+            return [
+                'Could not read the certificate store back after the '
+                'restart, so the retirement is unconfirmed and the proxy '
+                'may not have come back.',
+            ]
+        try:
+            store = json.loads(outcome.get('stdout') or '')
+        except (TypeError, ValueError):
+            return [
+                'The certificate store is unreadable after the restart. '
+                'Traefik holds no certificates from an unparseable store '
+                'and answers every handshake with a throwaway one.',
+            ]
+        left = set()
+        for resolver in (store or {}).values():
+            if not isinstance(resolver, dict):
+                continue
+            for entry in resolver.get('Certificates') or []:
+                left.update(self.job.host_id._acme_entry_names(entry))
+        survived = sorted(left & set(self._acme_retired))
+        if survived:
+            return [
+                'Still in the certificate store after the restart: '
+                f'{", ".join(survived)}. They keep being served instead '
+                'of the certificate this host was given.',
+            ]
+        return []
