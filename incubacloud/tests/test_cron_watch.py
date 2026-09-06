@@ -34,10 +34,37 @@ class CronWatchCase(TransactionCase):
         # run against is whatever the module installed, which differs
         # between a fresh database and a clone of production.
         self._stopped().write({"active": True})
+        # And no alert of ours exists when a test starts. This check
+        # runs for real on the manager, so any database it has run on
+        # carries its rows, and what they leave behind changes the
+        # answer in opposite directions: an *active* one is reused
+        # rather than added, so "it raised an alert" finds a row the
+        # test never caused; a *dismissed* one is not reused, so a
+        # second row appears and "exactly one" counts two. Between
+        # them they cover every database this suite runs against —
+        # which is why every test here has to start from none.
+        #
+        # Removed rather than filtered around: the reuse means a
+        # leftover changes what the code under test *does*, not just
+        # what the assertions can see. The transaction rolls back, so
+        # the manager keeps its own rows.
+        self.env["cloud.alert"].sudo().search(
+            [("code", "=", ir_cron_watch.ALERT_CODE)],
+        ).unlink()
 
     def _stopped(self):
         """Return whatever the check currently considers stopped."""
         return self.env["ir.cron"]._disabled_platform_crons()
+
+    def _alerts(self, **extra):
+        """Return the alerts of ours now on the database.
+
+        :param extra: further field/value pairs to filter on
+        :rtype: odoo.models.Model
+        """
+        domain = [("code", "=", ir_cron_watch.ALERT_CODE)]
+        domain += [(field, "=", value) for field, value in extra.items()]
+        return self.env["cloud.alert"].sudo().search(domain)
 
     def _one_of_ours(self):
         """Return one cron owned by us, whatever the install has."""
@@ -52,10 +79,7 @@ class CronWatchCase(TransactionCase):
         return self.Cron.browse(data.res_id)
 
     def _active_alert(self):
-        return self.env["cloud.alert"].sudo().search([
-            ("code", "=", ir_cron_watch.ALERT_CODE),
-            ("state", "=", "active"),
-        ], limit=1)
+        return self._alerts(state="active")[:1]
 
 
 class TestWhatCountsAsStopped(CronWatchCase):
@@ -124,11 +148,7 @@ class TestTheAlert(CronWatchCase):
         crons.write({"active": False, "lastcall": self.long_ago})
 
         self.assertEqual(self.env["ir.cron"]._cron_check_disabled(), 3)
-        alerts = self.env["cloud.alert"].sudo().search([
-            ("code", "=", ir_cron_watch.ALERT_CODE),
-            ("state", "=", "active"),
-        ])
-        self.assertEqual(len(alerts), 1)
+        self.assertEqual(len(self._alerts(state="active")), 1)
 
     def test_the_alert_names_them(self):
         cron = self._one_of_ours()
@@ -158,10 +178,7 @@ class TestTheAlert(CronWatchCase):
         cron.write({"active": False, "lastcall": self.long_ago})
         self.env["ir.cron"]._cron_check_disabled()
         self.env["ir.cron"]._cron_check_disabled()
-        alerts = self.env["cloud.alert"].sudo().search([
-            ("code", "=", ir_cron_watch.ALERT_CODE),
-        ])
-        self.assertEqual(len(alerts), 1)
+        self.assertEqual(len(self._alerts()), 1)
 
 
 class TestTheWatchdogIsNotItsOwnBlindSpot(CronWatchCase):

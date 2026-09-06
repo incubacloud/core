@@ -6,6 +6,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.0.113] — 2026-09-06
+
+### Fixed
+
+- **The watchdog's own tests read the manager's history as their own.** `cloud.alert` rows for `crons_disabled` survive in any database the check has run on, and what a leftover does depends on its state: an *active* one is reused rather than added, so "it raised an alert" finds a row the test never caused; a *dismissed* one is not reused, so a second row appears and "exactly one alert" counts two. Development databases carry the first, the manager's own carried the second, and between them every assertion in the suite was resting on whichever the database happened to hold. Caught by the deploy's boot test against a clone of production, where four of them failed at once. The tests now clear those rows in `setUp` rather than filtering around them — the reuse means a leftover changes what the code under test *does*, not merely what the assertions can see.
+
+---
+
 ## [1.0.112] — 2026-09-06
 
 ### Fixed
