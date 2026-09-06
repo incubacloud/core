@@ -11,6 +11,7 @@ restart and the connections in flight through it.
 import shlex
 
 from . import _config_snapshot_diff as _snapshot_diff
+from . import acme_store
 from .abstract_executor import AbstractSSHExecutor
 from .full_setup_executor import _TMP
 
@@ -18,7 +19,9 @@ from .full_setup_executor import _TMP
 _PROXY_KEYS = {'trusted_proxy_ranges', 'block_direct_access'}
 
 
-class PushTrustedProxiesExecutor(AbstractSSHExecutor):
+class PushTrustedProxiesExecutor(
+    acme_store.AcmeStorePruneMixin, AbstractSSHExecutor,
+):
     """Upload the patched Traefik configuration and restart the proxy.
 
     Ships both documents together because they are interlocked: the
@@ -42,6 +45,9 @@ class PushTrustedProxiesExecutor(AbstractSSHExecutor):
         if cert and key:
             files[f'{_TMP}-default.crt'] = cert
             files[f'{_TMP}-default.key'] = key
+        pruned = await self._prepare_acme_prune(transport)
+        if pruned:
+            files[acme_store.LOCAL_PATH] = pruned
         await transport.upload_text_files(files)
         self._sys(
             f'✓ Trusted proxy configuration prepared ({len(ranges)} '
@@ -152,12 +158,15 @@ class PushTrustedProxiesExecutor(AbstractSSHExecutor):
                 ' ~/traefik/certs/default.key;'
                 f' rm -f {_TMP}-tls.yml; fi',
             ),
-            (
-                'Restart Traefik',
-                'cd ~/traefik && docker compose -p inverseproxy'
-                ' -f inverseproxy.yaml restart proxy',
-            ),
         ]
+        prune = self._acme_prune_step()
+        if prune:
+            commands.append(prune)
+        commands.append((
+            'Restart Traefik',
+            'cd ~/traefik && docker compose -p inverseproxy'
+            ' -f inverseproxy.yaml restart proxy',
+        ))
         firewall = self._refresh_firewall_sets()
         if firewall:
             commands.append(firewall)

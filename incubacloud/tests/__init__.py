@@ -127,3 +127,4 @@ from . import test_concurrency_isolation
 from . import test_wildcard_domain_validation
 from . import test_metadata_leaks
 from . import test_neutralize
+from . import test_acme_store_prune

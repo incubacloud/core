@@ -2304,6 +2304,80 @@ class CloudHost(models.Model):
             "        keyFile: /etc/certs/default.key\n"
         )
 
+    @staticmethod
+    def _acme_entry_names(entry):
+        """Return the names one stored certificate presents itself for.
+
+        :param entry: one element of a resolver's ``Certificates``
+        :rtype: list
+        """
+        if not isinstance(entry, dict):
+            return []
+        domain = entry.get("domain")
+        if not isinstance(domain, dict):
+            return []
+        names = [domain.get("main")] + list(domain.get("sans") or [])
+        return [tls_names.normalise(name) for name in names if name]
+
+    def _prune_acme_store(self, document):
+        """Return this host's certificate store without what it no longer uses.
+
+        Every certificate in the store is published under the default
+        TLS store at start-up and chosen by server name before any
+        router is consulted. So changing a router to serve the host's
+        own certificate does not change what the visitor is handed: the
+        stored one keeps winning until it is gone from the store. That
+        is why a name moved behind a CDN goes on presenting a
+        certificate it can no longer renew, with nothing in the logs to
+        say so.
+
+        An entry is retired only when *every* name on it is one this
+        host now answers with its own certificate. One covering a
+        mixture is left alone: retiring it would take down the names
+        still reached directly, which have nothing else to be served
+        with.
+
+        A store that cannot be read is returned untouched. Rewriting one
+        this version does not understand would cost every certificate on
+        it, and the names that still need them cannot be re-obtained
+        from behind a CDN.
+
+        :param str document: contents of Traefik's ``acme.json``
+        :return: ``(document, retired names)``, the document unchanged
+            when nothing was retired
+        :rtype: tuple
+        """
+        self.ensure_one()
+        try:
+            store = json.loads(document or "")
+        except (TypeError, ValueError):
+            return document, []
+        if not isinstance(store, dict):
+            return document, []
+        retired = []
+        for resolver in store.values():
+            if not isinstance(resolver, dict):
+                continue
+            certificates = resolver.get("Certificates")
+            if not isinstance(certificates, list):
+                continue
+            kept, dropped = [], []
+            for entry in certificates:
+                names = self._acme_entry_names(entry)
+                if names and all(
+                    self._router_tls_mode(name) == "default"
+                    for name in names
+                ):
+                    dropped.extend(names)
+                    continue
+                kept.append(entry)
+            if dropped:
+                resolver["Certificates"] = kept
+                retired.extend(dropped)
+        if not retired:
+            return document, []
+        return json.dumps(store), retired
+
     @api.constrains("trusted_proxy_ranges")
     def _check_trusted_proxy_ranges(self):
         """Refuse a range list carrying an entry that is not a network.

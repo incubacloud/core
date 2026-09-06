@@ -29,6 +29,7 @@ import re
 
 import bcrypt as _bcrypt
 
+from . import acme_store
 from .abstract_executor import AbstractSSHExecutor
 from .setup_whitelist_executor import (
     build_whitelist_compose,
@@ -121,7 +122,9 @@ def _build_inverseproxy(content, wildcard_domain, panel_password):
     return content
 
 
-class FullSetupExecutor(AbstractSSHExecutor):
+class FullSetupExecutor(
+    acme_store.AcmeStorePruneMixin, AbstractSSHExecutor,
+):
     _job_type = "full_setup"
 
     def _host(self):
@@ -159,6 +162,9 @@ class FullSetupExecutor(AbstractSSHExecutor):
         if cert and key:
             files[f"{_TMP}-default.crt"] = cert
             files[f"{_TMP}-default.key"] = key
+        pruned = await self._prepare_acme_prune(transport)
+        if pruned:
+            files[acme_store.LOCAL_PATH] = pruned
         await transport.upload_text_files(files)
         self._sys("✓ Traefik configuration files uploaded.")
 
@@ -175,7 +181,7 @@ class FullSetupExecutor(AbstractSSHExecutor):
         self._sys("✓ Whitelist compose file uploaded.")
 
     def get_commands(self):
-        return [
+        commands = [
             # ── Phase 1: compatibility ────────────────────────────────
             ("check:os",   "uname -s"),
             ("check:disk", "df -B1 --output=avail / | tail -n 1"),
@@ -241,6 +247,15 @@ class FullSetupExecutor(AbstractSSHExecutor):
                 " up -d --remove-orphans",
             ),
         ]
+        # Immediately before the proxy comes up, so it starts having
+        # forgotten them. Only ever present on a re-run: a host being
+        # set up for the first time has no store to prune, and the read
+        # that decides this cannot reach a proxy that is not running.
+        prune = self._acme_prune_step()
+        if prune:
+            labels = [label for label, *_ in commands]
+            commands.insert(labels.index("Start Traefik"), prune)
+        return commands
 
     def parse_results(self, results):
         errors = []

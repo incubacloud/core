@@ -6,6 +6,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.0.112] — 2026-09-06
+
+### Fixed
+
+- **Handing a host a certificate did not stop it serving the old ones.** Traefik publishes everything in its own ACME store under the default TLS store when it starts, and the handshake picks by server name before any router is consulted — so a name whose router was changed to serve the host's certificate went on being answered with the stored one, indefinitely. Measured on 2.11: an entry in the store wins even when its only router asks for the default, and even when it has no router at all. Six tenants moved behind a CDN were still presenting certificates they can no longer renew, with correct routers, correct labels and nothing in the logs to say so. The two jobs that install the certificate and restart the proxy now retire the entries the host has started serving itself, immediately before the restart. An entry is only retired when *every* name on it is one this host covers and a CDN answers for — a certificate covering a mixture is left alone, because retiring it would take the names still reached directly down to a throwaway. A store that cannot be read, or cannot be parsed, is left exactly as it is: the names on it cannot obtain another certificate from behind a CDN, so losing one is not recoverable.
+
+---
+
 ## [1.0.111] — 2026-09-06
 
 ### Fixed

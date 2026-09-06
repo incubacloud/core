@@ -6,17 +6,41 @@ nothing". The removal half is the one worth pinning — a stale allowlist
 rejects deliveries silently, where no allowlist merely leaves them
 unfiltered, so removal has to happen whether or not anything replaces it.
 """
+import asyncio
+import json
+from unittest.mock import MagicMock
+
 from odoo.tests.common import TransactionCase
 
 from ..github.edge import EDGE_CONFIG_FILENAME
+from ..models import acme_store
+from ..models.full_setup_executor import FullSetupExecutor
 from ..models.github_webhook_edge import RANGES_PARAM
 from ..models.github_webhook_edge_executor import (
     PushGitHubWebhookEdgeExecutor,
 )
 from ..models.push_trusted_proxies_executor import PushTrustedProxiesExecutor
+from ..models.transport import CommandResult, SSHTransport
+
+from ._certs import make_pair
 
 RANGES = ["192.30.252.0/22"]
 EDGE_PROXY = ["198.51.100.0/24"]
+
+
+def _store(main):
+    """Return an ACME store document holding one certificate for *main*."""
+    return json.dumps({"letsencrypt": {"Certificates": [
+        {"domain": {"main": main, "sans": []}, "Store": "default"},
+    ]}})
+
+
+#: Covered by the fixture host's own certificate, so it is served from
+#: that one now and the stored entry is what keeps overriding it.
+STORE_WITH_COVERED = _store("a.edge-exec.example.com")
+#: A customer's own domain: still reached directly, still renewable,
+#: and not covered by anything this host holds.
+STORE_WITHOUT_COVERED = _store("shop.customer.example")
 
 
 class EdgeExecutorCase(TransactionCase):
@@ -238,3 +262,140 @@ class TestTrustedProxyCommands(EdgeExecutorCase):
         self.assertLess(
             labels.index("Restart Traefik"), labels.index(self._FIREWALL),
         )
+
+
+class AcmePruneCase(EdgeExecutorCase):
+    """Retiring what the proxy obtained before the host was given a
+    certificate of its own.
+
+    Installing the certificate is only half of that change. Traefik
+    publishes its whole ACME store under the default TLS store at
+    start-up and picks by server name before consulting a router, so
+    until an entry is gone from the store it keeps winning — which is
+    how six tenants went on presenting certificates they can no longer
+    renew, with correct routers and nothing in the logs.
+    """
+
+    _STEP = "Retire stored certificates"
+
+    def setUp(self):
+        super().setUp()
+        cert, key = make_pair(("*.edge-exec.example.com",))
+        self.host.write({
+            "behind_cdn": True,
+            "tls_default_cert": cert,
+            "tls_default_key": key,
+        })
+
+    def _prepared(self, cls, code, stored, exit_status=0):
+        """Run *cls*'s preparation against a host whose store is *stored*.
+
+        :return: ``(executor, files it staged for upload)``
+        """
+        executor = self._executor(cls, code)
+        transport = MagicMock(spec=SSHTransport)
+        transport.run.return_value = CommandResult(
+            stdout=stored, exit_status=exit_status,
+        )
+        asyncio.run(executor.before_execute(transport))
+        return executor, transport.upload_text_files.call_args[0][0]
+
+
+class TestRetiringStoredCertificates(AcmePruneCase):
+
+    def _run(self, stored, exit_status=0):
+        return self._prepared(
+            PushTrustedProxiesExecutor, "push_trusted_proxies",
+            stored, exit_status,
+        )
+
+    def test_a_covered_name_is_staged_out_of_the_store(self):
+        executor, files = self._run(STORE_WITH_COVERED)
+        self.assertIn(acme_store.LOCAL_PATH, files)
+        self.assertNotIn("a.edge-exec.example.com",
+                         files[acme_store.LOCAL_PATH])
+
+    def test_the_step_runs_before_the_proxy_restarts(self):
+        """A restart is what makes the proxy forget them; doing it the
+        other way round would leave the old store loaded."""
+        executor, _ = self._run(STORE_WITH_COVERED)
+        labels = [label for label, *_ in executor.get_commands()]
+        self.assertLess(
+            labels.index(self._STEP), labels.index("Restart Traefik"),
+        )
+
+    def test_nothing_to_retire_stages_nothing_and_adds_no_step(self):
+        executor, files = self._run(STORE_WITHOUT_COVERED)
+        self.assertNotIn(acme_store.LOCAL_PATH, files)
+        self.assertNotIn(self._STEP, dict(executor.get_commands()))
+
+    def test_a_store_that_cannot_be_read_is_left_alone(self):
+        """A proxy that is not running answers nothing. Writing a store
+        built from that would cost every certificate on it."""
+        executor, files = self._run("", exit_status=1)
+        self.assertNotIn(acme_store.LOCAL_PATH, files)
+        self.assertNotIn(self._STEP, dict(executor.get_commands()))
+
+    def test_a_host_with_no_certificate_of_its_own_retires_nothing(self):
+        """With nothing to fall back on, retiring an entry would leave
+        the name answered by a throwaway."""
+        self.host.write({"tls_default_cert": False, "tls_default_key": False})
+        executor, files = self._run(STORE_WITH_COVERED)
+        self.assertNotIn(acme_store.LOCAL_PATH, files)
+        self.assertNotIn(self._STEP, dict(executor.get_commands()))
+
+    def test_the_certificate_is_still_installed_alongside(self):
+        """The two halves ship together or the host serves neither."""
+        _, files = self._run(STORE_WITH_COVERED)
+        self.assertTrue(
+            [path for path in files if path.endswith("-default.crt")],
+        )
+
+
+class TestTheWriteKeepsTheStoreUsable(EdgeExecutorCase):
+    """Traefik refuses a store any other account can read, and then
+    obtains nothing at all — silently."""
+
+    def test_it_writes_through_the_existing_file(self):
+        # ``cat >`` keeps the mode the file already has; moving a new
+        # file over it would not.
+        self.assertIn("sh -c 'cat > /etc/traefik/acme/acme.json'",
+                      acme_store.WRITE_COMMAND)
+
+    def test_it_reaches_the_store_through_the_container(self):
+        """It lives in a named volume, not on the host filesystem."""
+        self.assertIn("exec -T proxy", acme_store.WRITE_COMMAND)
+        self.assertIn("exec -T proxy", acme_store.READ_COMMAND)
+
+    def test_the_staged_copy_does_not_survive_a_success(self):
+        self.assertIn(f"rm -f {acme_store.LOCAL_PATH}",
+                      acme_store.WRITE_COMMAND)
+
+    def test_a_failed_write_is_still_a_failed_step(self):
+        """Sequenced with ``;`` the removal's exit status would mask it,
+        and the host would report a prune that never happened."""
+        self.assertIn(f"&& rm -f {acme_store.LOCAL_PATH}",
+                      acme_store.WRITE_COMMAND)
+
+
+class TestFullSetupConverges(AcmePruneCase):
+    """A host set up again has to end up where a settings push would
+    leave it, or the two jobs disagree about the same host."""
+
+    def test_the_step_lands_before_the_proxy_comes_up(self):
+        executor, _ = self._prepared(
+            FullSetupExecutor, "full_setup", STORE_WITH_COVERED,
+        )
+        labels = [label for label, *_ in executor.get_commands()]
+        self.assertLess(
+            labels.index(self._STEP), labels.index("Start Traefik"),
+        )
+
+    def test_a_first_setup_has_no_store_to_prune(self):
+        """Nothing is running yet, so the read fails — which is also
+        the honest answer: there is nothing there."""
+        executor, files = self._prepared(
+            FullSetupExecutor, "full_setup", "", exit_status=1,
+        )
+        self.assertNotIn(acme_store.LOCAL_PATH, files)
+        self.assertNotIn(self._STEP, dict(executor.get_commands()))
