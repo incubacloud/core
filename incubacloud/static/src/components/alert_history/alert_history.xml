@@ -91,6 +91,10 @@
                                     <span t-att-class="'rl-sb ah-state-badge ' + alert.state"
                                           ><span class="rl-d"/><t t-esc="alert.state"/></span>
                                     <span class="ah-card-date" t-esc="formatDate(alert.create_date)"/>
+                                    <t t-if="lastSeen(alert)">
+                                        <span class="ah-card-lastseen"
+                                              t-esc="'last seen ' + lastSeen(alert)"/>
+                                    </t>
                                 </div>
                             </div>
                             <div class="rl-ad ah-card-message" t-esc="alert.message"/>
@@ -114,6 +118,9 @@
                                                     </div>
                                                     <t t-if="grp.samples and grp.samples.length">
                                                         <pre class="ah-error-samples"><t t-foreach="grp.samples" t-as="line" t-key="line_index"><t t-esc="line"/><t t-if="!line_last">&#10;</t></t></pre>
+                                                    </t>
+                                                    <t t-if="grp.context and grp.context.length">
+                                                        <pre class="ah-error-context"><t t-foreach="grp.context" t-as="line" t-key="line_index"><t t-esc="line"/><t t-if="!line_last">&#10;</t></t></pre>
                                                     </t>
                                                 </div>
                                             </t>

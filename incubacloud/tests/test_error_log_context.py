@@ -9,11 +9,13 @@ follow each header, bounded so a log stuck in a loop cannot inflate the
 serialized payload.
 """
 import asyncio
+import pathlib
 
-from odoo.tests.common import TransactionCase
+from odoo.tests.common import BaseCase, TransactionCase
 
 from odoo.addons.incubacloud.models.instance_health_executor import (
     _ERROR_CONTEXT_CHARS,
+    _ERROR_CONTEXT_TAIL,
     InstanceHealthExecutor,
 )
 
@@ -31,6 +33,26 @@ _TRACEBACK = [
     "    return self._do_it()",
     "ValueError: boom",
 ]
+
+#: A real Odoo cron traceback: ``ir_cron`` → ``ir_actions`` →
+#: ``safe_eval`` → the addon → the ORM. Thirty-odd frames, and the one
+#: line that says what broke is the last.
+_LONG_TRACEBACK = [
+    "Traceback (most recent call last):",
+    *[
+        f'  File "/opt/odoo/odoo/addons/base/models/frame{n}.py", '
+        f'line {n}, in step{n}'
+        for n in range(30)
+    ],
+    "    record._check_field_access(self, 'read')",
+    "odoo.exceptions.AccessError: You do not have enough rights to "
+    'access the field "core_saas_url" on IncubaCloud Settings.',
+]
+
+_TEMPLATE = (
+    pathlib.Path(__file__).resolve().parent.parent
+    / "static" / "src" / "components" / "alert_history" / "alert_history.xml"
+)
 
 
 class TestErrorLogContext(TransactionCase):
@@ -96,6 +118,27 @@ class TestErrorLogContext(TransactionCase):
         self.assertEqual(groups[0]["count"], 2)
         self.assertEqual(groups[0]["context"].count("ValueError: boom"), 1)
 
+    def test_the_exception_outlives_the_frames_above_it(self):
+        """Trimming a long traceback must eat the middle, not the end.
+
+        The alert that hid BUG-008 for a week stored twenty-five lines
+        and stopped one frame short of ``AccessError: … core_saas_url``.
+        Everything it did keep — ``ir_cron``, ``ir_actions``,
+        ``safe_eval`` — is identical in every cron failure there is.
+        """
+        groups = self._groups("\n".join([_HEADER, *_LONG_TRACEBACK]))
+        context = groups[0]["context"]
+        self.assertIn("AccessError", context[-1])
+        self.assertIn("Traceback (most recent call last):", context[0])
+        self.assertTrue(
+            any("skipped" in line for line in context),
+            "a trimmed traceback must say how many lines it dropped",
+        )
+        self.assertLessEqual(
+            len(context), _ERROR_CONTEXT_TAIL + 10,
+            "the compacted form must stay small enough to read",
+        )
+
     def test_runaway_context_is_capped(self):
         """A log loop must not inflate the serialized payload."""
         noise = ["x" * 500] * 40
@@ -124,3 +167,21 @@ class TestErrorLogContext(TransactionCase):
         self.assertIn(
             "ValueError: boom", "\n".join(alert.payload[0]["context"]),
         )
+
+
+class TestErrorContextIsVisible(BaseCase):
+    """A traceback nobody can see is a traceback nobody reads."""
+
+    def test_the_panel_renders_the_stored_context(self):
+        """The alert card must show ``context``, not only ``samples``.
+
+        The probe has shipped the traceback in the payload since core
+        1.0.75, and the panel has never rendered it: the only way to
+        read one was a psql query against production.
+        """
+        markup = _TEMPLATE.read_text()
+        self.assertIn(
+            "grp.context", markup,
+            "the alert history template ignores the stored traceback",
+        )
+

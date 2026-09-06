@@ -13,10 +13,26 @@ from .abstract_executor import AbstractSSHExecutor
 _MEM_WARN_PCT = 85.0      # memory % that triggers a warning once sustained
 _CPU_WARN_PCT = 90.0      # CPU %    that triggers a warning once sustained
 _ERROR_GROUPS_WARN = 1    # number of distinct ERROR fingerprints since last check
-_ERROR_LINES_HEAD = 600   # cap raw log lines fetched (headers + context)
+_ERROR_LINES_HEAD = 1500  # cap raw log lines fetched (headers + context)
 _ERROR_GROUPS_MAX = 10    # cap distinct fingerprints shipped in the payload
 _ERROR_SAMPLE_PER_GRP = 3 # raw lines kept per fingerprint for the payload
-_ERROR_CONTEXT_LINES = 25 # log lines captured after each ERROR header
+_ERROR_CONTEXT_LINES = 60 # log lines captured after each ERROR header
+
+# How long an ``instance_error_logs`` alert must go unseen before a
+# clean cycle closes it. See ``_resolve_error_logs_when_quiet``.
+_ERROR_QUIET_HOURS = 24
+
+# Shape of the traceback stored per group. An Odoo traceback reaches
+# the failing line through ``ir_cron`` → ``ir_actions`` → ``safe_eval``
+# → the addon → the ORM: the frames at the top are the same in every
+# cron failure, and the exception type and message — the only lines
+# that say *what* broke — are the last ones. So trimming always eats
+# the middle, and the tail is the last thing to go.
+_ERROR_CONTEXT_HEAD = 6           # first lines kept: where it was called from
+_ERROR_CONTEXT_TAIL = 14          # last lines kept: the exception itself
+_ERROR_CONTEXT_LINE_CHARS = 300   # per-line cap before anything is stored
+_ERROR_CONTEXT_MAX_LINES = 200    # accumulation guard for a log in a loop
+_ERROR_CONTEXT_SKIPPED = '… %d line(s) skipped …'
 
 # ── Odoo log archive watchdog ─────────────────────────────────────────
 # Odoo writes its log to ``logs/odoo.log`` on the host (see
@@ -62,7 +78,7 @@ _NEWEST_ARCHIVE = (
     "-regex 'logs/odoo\\.log\\.[0-9]{4}-[0-9]{2}-[0-9]{2}(\\.gz)?' "
     "-printf '%T@ %p\\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-"
 )
-_ERROR_CONTEXT_CHARS = 2000  # hard cap on the context stored per group
+_ERROR_CONTEXT_CHARS = 4000  # hard cap on the context stored per group
 
 # Hysteresis: how many consecutive cycles must stay above the CPU/memory
 # threshold before we surface the alert. With the cron firing every 5 min,
@@ -501,16 +517,55 @@ class InstanceHealthExecutor(AbstractSSHExecutor):
         """Store one traceback line under its ERROR group.
 
         Only the first occurrence of a fingerprint contributes context —
-        every repeat carries the same stack — and the group stops
-        growing at ``_ERROR_CONTEXT_CHARS`` so a log stuck in a loop
-        cannot inflate the serialized alert payload.
+        every repeat carries the same stack. Lines are kept as they come
+        and the group is compacted once it closes; the guard here is
+        only against a log stuck in a loop, and even that drops from the
+        middle, because the end of a traceback is the part worth having.
         """
         if group['count'] > 1:
             return
-        used = sum(len(stored) for stored in group['context'])
-        if used >= _ERROR_CONTEXT_CHARS:
-            return
-        group['context'].append(line[:_ERROR_CONTEXT_CHARS - used])
+        group['context'].append(line[:_ERROR_CONTEXT_LINE_CHARS])
+        if len(group['context']) > _ERROR_CONTEXT_MAX_LINES:
+            del group['context'][_ERROR_CONTEXT_HEAD]
+            group['skipped'] += 1
+
+    def _compact_context(self, group):
+        """Reduce a group's context to head + marker + tail, in place.
+
+        Called once the whole blob is parsed, so the tail is known. The
+        alert that hid a fleet-wide cron failure for a week stored the
+        first twenty-five lines of its traceback and stopped one frame
+        short of ``AccessError: … "core_saas_url"`` — every line it did
+        keep was boilerplate shared by every cron failure there is.
+
+        Both budgets (lines and characters) are spent from the middle
+        outwards: the head goes first, then the oldest tail lines, and
+        the very last line survives everything.
+        """
+        skipped = group.pop('skipped', 0)
+        head = group['context'][:_ERROR_CONTEXT_HEAD]
+        tail = group['context'][_ERROR_CONTEXT_HEAD:]
+        if len(tail) > _ERROR_CONTEXT_TAIL:
+            skipped += len(tail) - _ERROR_CONTEXT_TAIL
+            tail = tail[-_ERROR_CONTEXT_TAIL:]
+
+        def _stored_size():
+            marker = len(_ERROR_CONTEXT_SKIPPED % skipped) if skipped else 0
+            return (
+                sum(len(line) for line in head)
+                + sum(len(line) for line in tail)
+                + marker
+            )
+
+        while _stored_size() > _ERROR_CONTEXT_CHARS and head:
+            head.pop()
+            skipped += 1
+        while _stored_size() > _ERROR_CONTEXT_CHARS and len(tail) > 1:
+            tail.pop(0)
+            skipped += 1
+        group['context'] = head + (
+            [_ERROR_CONTEXT_SKIPPED % skipped] if skipped else []
+        ) + tail
 
     def _dedupe_error_lines(self, raw):
         """Turn a blob of raw log lines into an ordered list of groups:
@@ -546,6 +601,7 @@ class InstanceHealthExecutor(AbstractSSHExecutor):
                     'count': 0,
                     'samples': [],
                     'context': [],
+                    'skipped': 0,
                 }
                 order.append(fp)
             grp = groups[fp]
@@ -558,7 +614,10 @@ class InstanceHealthExecutor(AbstractSSHExecutor):
             key=itemgetter('count'),
             reverse=True,
         )
-        return ordered[:_ERROR_GROUPS_MAX]
+        shipped = ordered[:_ERROR_GROUPS_MAX]
+        for group in shipped:
+            self._compact_context(group)
+        return shipped
 
     # ── Outcome ───────────────────────────────────────────────────────────
 
@@ -764,7 +823,7 @@ class InstanceHealthExecutor(AbstractSSHExecutor):
                 f"({len(self._error_groups)} unique group(s))."
             )
         else:
-            self._resolve_inst_alert('instance_error_logs')
+            self._resolve_error_logs_when_quiet()
 
         # Derive overall status
         if 'unresponsive' in issues:
@@ -846,6 +905,44 @@ class InstanceHealthExecutor(AbstractSSHExecutor):
                 job=env['cloud.job'].browse(self.job.id),
                 payload=payload,
             )
+
+    def _resolve_error_logs_when_quiet(self):
+        """Dismiss ``instance_error_logs`` only after a full quiet day.
+
+        Every other alert this probe raises describes a condition it can
+        read right now, so a clean cycle is genuinely the end of it.
+        This one describes something that already happened, and the
+        window is only the few minutes since the last check: an error
+        that fires every six hours raised an alert that the very next
+        cycle dismissed, notifying on-call twice about something nobody
+        could act on in between, and leaving the panel — which filters
+        to active by default — showing nothing at all. That is how a
+        cron stayed broken across the whole tenant fleet for a week.
+
+        ``create_date`` is the fallback for rows written before
+        ``last_raised_at`` existed; without it every alert open at
+        deploy time would stay open for ever.
+        """
+        inst = self._inst()
+        cutoff = odoo_fields.Datetime.now() - timedelta(
+            hours=_ERROR_QUIET_HOURS,
+        )
+        with self.job.env.registry.cursor() as cr:
+            env = self.job.env(cr=cr)
+            instance = env['cloud.instance'].browse(inst.id)
+            Alert = env['cloud.alert']
+            alert = Alert.search(
+                Alert._dedup_domain(
+                    'instance_error_logs', instance=instance,
+                ),
+                limit=1,
+            )
+            if not alert:
+                return
+            last_seen = alert.last_raised_at or alert.create_date
+            if last_seen and last_seen > cutoff:
+                return
+            Alert.resolve_alert('instance_error_logs', instance=instance)
 
     def _resolve_inst_alert(self, code):
         """Dismiss the active instance-scoped alert for *code*.

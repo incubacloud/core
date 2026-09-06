@@ -242,6 +242,31 @@
     &::-webkit-scrollbar-thumb { background: $border; border-radius: 2px; }
 }
 
+.ah-error-context {
+    margin: 0;
+    padding: 6px 8px;
+    font-family: $font-mono;
+    font-size: 10.5px;
+    line-height: 1.4;
+    color: $text-muted;
+    background: var(--rl-logs-bg);
+    border-left: 2px solid rgba(var(--rl-line-rgb), 0.8);
+    border-radius: 0 4px 4px 0;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 260px;
+    overflow-y: auto;
+
+    &::-webkit-scrollbar { width: 4px; }
+    &::-webkit-scrollbar-thumb { background: $border; border-radius: 2px; }
+}
+
+.ah-card-lastseen {
+    font-size: 11px;
+    color: $text-muted;
+    white-space: nowrap;
+}
+
 // ── Resolve conflict modal ─────────────────────────────────────────────────────
 
 .ah-resolve-box {

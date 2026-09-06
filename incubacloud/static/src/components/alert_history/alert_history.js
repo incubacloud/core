@@ -216,6 +216,24 @@ export class AlertHistory extends Component {
         await this.loadAlerts();
     }
 
+    /**
+     * Formatted "last seen" stamp for an alert, or "" when it would
+     * only repeat what the creation date already says.
+     *
+     * An alert that keeps being re-raised (a cron failing every six
+     * hours) shows the same creation date for days, which reads as
+     * stale. The stamp is what says the problem is still happening.
+     *
+     * @param {Object} alert alert entry from ``get_alert_history``
+     * @returns {string} formatted stamp, or "" when there is nothing
+     *   worth showing
+     */
+    lastSeen(alert) {
+        if (!alert.last_raised_at) return "";
+        const seen = this.formatDate(alert.last_raised_at);
+        return seen === this.formatDate(alert.create_date) ? "" : seen;
+    }
+
     formatDate(dateStr) {
         if (!dateStr) return "—";
         const d = parseUTC(dateStr);

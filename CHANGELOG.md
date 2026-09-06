@@ -6,6 +6,34 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.0.115] — 2026-09-06
+
+### Fixed
+
+- **The error-log alert kept the useless half of the traceback.** The probe
+  stored 25 lines after each ERROR header, which in an Odoo cron failure is
+  `ir_cron` → `ir_actions` → `safe_eval` and nothing else: the exception type
+  and message, the only lines that say what broke, fell off the end. Capture
+  is now 60 lines and a group is compacted to head + `… N line(s) skipped …`
+  + tail, so trimming always eats the middle and the last line survives.
+  This is what left a fleet-wide broken cron undiagnosable for a week.
+- **The panel never rendered the traceback it had.** The alert card showed
+  the ERROR headers and dropped `context` on the floor, so reading a stack
+  meant querying the database by hand. It is now shown under each group.
+- **An error alert was dismissed five minutes after it was raised.** The
+  probe's window is the time since the last check, so an error that fires
+  every six hours produced an alert the next clean cycle closed — two
+  notifications minutes apart, and nothing left in a panel that filters to
+  active by default. `instance_error_logs` now closes only after
+  `_ERROR_QUIET_HOURS` (24 h) without the error being seen again.
+
+### Added
+
+- `cloud.alert.last_raised_at`: when the condition was last observed,
+  stamped on every raise and shown as "last seen" in the alert history, so
+  an alert that keeps being re-raised no longer reads as days old. Nullable;
+  consumers fall back to `create_date`.
+
 ## [1.0.114] — 2026-09-06
 
 ### Fixed

@@ -88,6 +88,17 @@ class CloudAlert(models.Model):
         ),
     )
     create_date = fields.Datetime(readonly=True)
+    last_raised_at = fields.Datetime(
+        string="Last Seen",
+        readonly=True,
+        help=(
+            "When the condition behind this alert was last observed. "
+            "Refreshed on every raise, so an alert that keeps being "
+            "re-raised shows how recent the problem is rather than "
+            "when it first appeared. Nullable: rows written before "
+            "this field existed fall back to ``create_date``."
+        ),
+    )
 
     @api.model_create_multi
     def create(self, vals_list):
@@ -213,7 +224,13 @@ class CloudAlert(models.Model):
         existing = self.search(
             self._dedup_domain(code, host=host, instance=instance), limit=1,
         )
-        vals = {"message": message, "level": level}
+        # Stamped on create *and* on refresh: consumers that decide how
+        # stale an alert is need the last sighting, not the first.
+        vals = {
+            "message": message,
+            "level": level,
+            "last_raised_at": fields.Datetime.now(),
+        }
         if job:
             vals["job_id"] = job.id
         if payload is not None:

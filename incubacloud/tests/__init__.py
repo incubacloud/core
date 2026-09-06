@@ -115,6 +115,7 @@ from . import test_docker_prune_executor
 from . import test_deploy_override_protect
 from . import test_instance_health_probe
 from . import test_error_log_context
+from . import test_error_alert_quiet_window
 from . import test_config_snapshot_frozen
 from . import test_deploy_override_logging
 from . import test_instance_log_archive

@@ -537,6 +537,7 @@ class CrudMixin:
                 'state': a.state,
                 'message': a.message,
                 'create_date': a.create_date,
+                'last_raised_at': a.last_raised_at,
                 'host': (
                     a.host_id.name
                     if a.host_id
