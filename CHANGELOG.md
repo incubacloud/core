@@ -18,6 +18,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   was line 1 of a 14-line tail, thirteen werkzeug requests behind it. A
   group now closes at the next log record of any level, as it already did
   at grep's own `--` marker.
+- **The probe could not read an instance still logging to its container.**
+  `docker compose logs` prefixes every line with `odoo-1  | `, and both
+  readers of that output are anchored to the start of the line on purpose:
+  one so asyncssh's echo of the scrape is never harvested as an error, the
+  other so only a real Odoo record is counted. The fallback error scrape
+  therefore produced no groups at all — an instance that has not been
+  rebuilt since file logging shipped could never raise
+  `instance_error_logs` — and the counter behind `instance_logs_unhealthy`
+  (`fallback`, Odoo unable to write to the log file) read zero on every
+  instance since it shipped. Both readings now pass `--no-log-prefix`.
 
 ## [1.0.117] — 2026-09-07
 

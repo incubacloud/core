@@ -236,6 +236,13 @@ class InstanceHealthExecutor(AbstractSSHExecutor):
         inside the container, and a symlink planted there would
         otherwise be followed on the host by this very command.
 
+        Container output is read without compose's ``odoo-1  |``
+        prefix. The parser on our side is anchored to the start of the
+        line on purpose — that is what keeps asyncssh's echo of this
+        very command from being harvested as an error — so a prefixed
+        header matched nothing and the fallback yielded no groups at
+        all.
+
         :param str d: remote instance directory
         :param str since: ``docker compose logs --since`` value (fallback)
         :param str cutoff: ``YYYY-MM-DD HH:MM:SS`` lower bound for the file
@@ -257,7 +264,7 @@ class InstanceHealthExecutor(AbstractSSHExecutor):
             f"| xargs -r zcat -f 2>/dev/null | tail -n {_LOG_ARCHIVE_TAIL}; "
             f"tail -n {_LOG_LIVE_TAIL} logs/odoo.log 2>/dev/null; }} "
             f"| {awk_since}; "
-            f"else docker compose logs --no-color "
+            f"else docker compose logs --no-color --no-log-prefix "
             f"--since '{since}' odoo 2>&1; "
             f"fi; }} "
             f"| {grep} "
@@ -271,7 +278,9 @@ class InstanceHealthExecutor(AbstractSSHExecutor):
         Three readings in one round trip: whether the instance has the
         log mount at all, how big the live file is, and how many Odoo
         lines still reach the container's output — which is where Odoo
-        goes when it cannot write to the file.
+        goes when it cannot write to the file. That count is taken
+        without compose's line prefix: the pattern is anchored so that
+        only a real Odoo record counts, and every line came prefixed.
 
         :param str d: remote instance directory
         :return: the shell command
@@ -284,7 +293,8 @@ class InstanceHealthExecutor(AbstractSSHExecutor):
             f"\"$({{ {_LIVE_LOG_IS_REGULAR} && stat -c %s logs/odoo.log; }} "
             f"2>/dev/null || echo 0)\"; "
             f"printf 'stdout:%s\\n' "
-            f"\"$(docker compose logs --no-color --since 30m --tail 500 odoo "
+            f"\"$(docker compose logs --no-color --no-log-prefix "
+            f"--since 30m --tail 500 odoo "
             f"2>/dev/null | grep -acP '{_ODOO_LINE_GREP}' || true)\"; "
             f"else printf 'dir:0\\n'; fi"
         )

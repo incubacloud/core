@@ -12,7 +12,9 @@ Both look perfectly healthy from every other angle.
 """
 import asyncio
 import gzip
+import os
 import shutil
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
@@ -67,6 +69,24 @@ class TestProbeReadsTheArchiveFile(TransactionCase):
         """Until an instance is rebuilt there is no file to read."""
         cmd = self._commands()["error_lines"]
         self.assertIn("docker compose logs", cmd)
+
+    def test_the_container_readings_strip_the_compose_prefix(self):
+        """``docker compose logs`` prefixes every line with ``odoo-1  |``.
+
+        Both readers of that output are anchored to the start of the
+        line on purpose (the ERROR parser, so asyncssh's echo of this
+        very command never matches; the stdout counter, so nothing but
+        an Odoo record counts). A prefixed line matches neither: the
+        fallback scrape produced no groups at all for the one instance
+        still on it, and the stdout count read zero everywhere.
+        """
+        cmds = self._commands()
+        for key in ("error_lines", "log_health"):
+            with self.subTest(reading=key):
+                self.assertIn(
+                    "docker compose logs --no-color --no-log-prefix",
+                    cmds[key],
+                )
 
     def test_error_scrape_reads_the_newest_archive_too(self):
         """Rotation happens at midnight; the window straddles it once a day."""
@@ -126,6 +146,32 @@ class TestProbeReadsRegularFilesOnly(TransactionCase):
     CANARY = (
         "2026-08-19 08:00:00,000 1 ERROR db odoo.sql_db: HOST-SECRET boom\n"
     )
+    #: Stands in for ``docker compose logs``: every line carries the
+    #: ``<service>-1  | `` prefix unless ``--no-log-prefix`` is passed,
+    #: which is what the real one does (checked against compose v5.5.1).
+    FAKE_DOCKER = (
+        "#!/bin/sh\n"
+        "prefix='odoo-1  | '\n"
+        'for arg in "$@"; do\n'
+        '  [ "$arg" = "--no-log-prefix" ] && prefix=""\n'
+        "done\n"
+        "while IFS= read -r line; do\n"
+        "  printf '%s%s\\n' \"$prefix\" \"$line\"\n"
+        'done < "$FAKE_DOCKER_OUTPUT"\n'
+    )
+    #: One failure and the records that follow it, as the container
+    #: prints them for an instance that has no ``logs/odoo.log`` yet.
+    CONTAINER_OUTPUT = (
+        "2026-08-19 09:00:00,000 1 ERROR db odoo.sql_db: container boom\n"
+        "Traceback (most recent call last):\n"
+        '  File "x.py", line 1\n'
+        "ValueError: still in the container\n"
+        "2026-08-19 09:00:01,000 1 INFO db odoo.modules: one\n"
+        "2026-08-19 09:00:02,000 1 INFO db odoo.modules: two\n"
+        "2026-08-19 09:00:03,000 1 INFO db odoo.modules: three\n"
+        "2026-08-19 09:00:04,000 1 INFO db odoo.modules: four\n"
+        "2026-08-19 09:00:05,000 1 INFO db odoo.modules: five\n"
+    )
 
     def setUp(self):
         super().setUp()
@@ -165,15 +211,36 @@ class TestProbeReadsRegularFilesOnly(TransactionCase):
         executor._skipped = False
         return executor
 
-    def _scrape(self):
-        """Run the error scrape against the temporary directory."""
+    def _scrape(self, env=None):
+        """Run the error scrape against the temporary directory.
+
+        :param dict env: environment for the shell; ours when omitted
+        """
         cmd = self._executor()._error_lines_command(
             self.root, "10m", "2000-01-01 00:00:00",
         )
         proc = subprocess.run(
-            ["sh", "-c", cmd], capture_output=True, timeout=60, check=False,
+            ["sh", "-c", cmd], capture_output=True, timeout=60,
+            check=False, env=env,
         )
         return proc.stdout.decode("utf-8", "replace")
+
+    def _with_fake_docker(self):
+        """Put a ``docker`` that behaves like ``compose logs`` on PATH.
+
+        :return: an environment mapping for :func:`subprocess.run`
+        """
+        bindir = Path(self.root) / "bin"
+        bindir.mkdir(exist_ok=True)
+        fake = bindir / "docker"
+        fake.write_text(self.FAKE_DOCKER, encoding="utf-8")
+        fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+        output = Path(self.root) / "container.log"
+        output.write_text(self.CONTAINER_OUTPUT, encoding="utf-8")
+        return os.environ | {
+            "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
+            "FAKE_DOCKER_OUTPUT": str(output),
+        }
 
     def test_the_scrape_reads_the_live_file_and_the_newest_archive(self):
         (self.logs / "odoo.log").write_text(self.ERROR_LIVE, encoding="utf-8")
@@ -197,6 +264,37 @@ class TestProbeReadsRegularFilesOnly(TransactionCase):
         (self.logs / "odoo.log").symlink_to(self.canary)
         out = self._scrape()
         self.assertNotIn("HOST-SECRET", out)
+
+    def test_an_instance_still_logging_to_the_container_is_read(self):
+        """No ``logs/odoo.log`` ⇒ the fallback branch.
+
+        Its lines have to reach the parser without compose's prefix,
+        or the anchored header regex files every one of them as
+        nothing at all and the instance can never raise an error alert.
+        """
+        out = self._scrape(env=self._with_fake_docker())
+        groups = self._executor()._dedupe_error_lines(out)
+        self.assertEqual(len(groups), 1, out)
+        self.assertEqual(groups[0]["count"], 1)
+        self.assertEqual(
+            groups[0]["context"][-1], "ValueError: still in the container",
+        )
+
+    def test_the_stdout_count_sees_the_container_lines(self):
+        """The ``fallback`` alert exists for Odoo writing to the
+        container instead of the file; its counter has read zero since
+        it shipped, because the prefix hid every line from ``^``."""
+        (self.logs / "odoo.log").write_text(self.ERROR_LIVE, encoding="utf-8")
+        executor = self._executor()
+        proc = subprocess.run(
+            ["sh", "-c", executor._log_health_command(self.root)],
+            capture_output=True, timeout=60, check=False,
+            env=self._with_fake_docker(),
+        )
+        health = executor._parse_log_health(
+            proc.stdout.decode("utf-8", "replace"),
+        )
+        self.assertEqual(health["stdout"], 6, proc.stdout)
 
 
 class TestLogHealthAlerts(TransactionCase):
