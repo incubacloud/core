@@ -28,7 +28,9 @@ export class JobHistory extends Component {
             users: [],
             loading: true,
             alertMode: !!jobId,
+            preClaim: false,
             filter: {
+                include_pre_claim: false,
                 states: [],
                 host_id: hostId,
                 user_id: null,
@@ -55,6 +57,7 @@ export class JobHistory extends Component {
         this.state.hosts = result.hosts;
         this.state.instances = result.instances || [];
         this.state.users = result.users || [];
+        this.state.preClaim = result.preClaim || false;
         this.state.loading = false;
     }
 
@@ -94,6 +97,7 @@ export class JobHistory extends Component {
         if (f.date_to) filters.date_to = f.date_to;
         if (f.instance_id) filters.instance_id = f.instance_id;
         if (f.user_id) filters.user_id = f.user_id;
+        if (f.include_pre_claim) filters.include_pre_claim = true;
         // When opened from a host or instance, restrict to that scope
         if (this.props.host_id) filters.apply_to = 'host';
         if (this.props.instance_id) filters.apply_to = 'instance';
@@ -118,12 +122,24 @@ export class JobHistory extends Component {
         this.state.filter.job_category = "operational";
         this.state.filter.job_id = null;
         this.state.filter.instance_id = instanceId;
+        this.state.filter.include_pre_claim = false;
         this.state.alertMode = false;
         this.loadHistory();
     }
 
     resetFilter() {
         this.resetFilters();
+    }
+
+    /**
+     * Show or hide the jobs that predate this instance's handover.
+     *
+     * Only reachable when the backend reported a cutoff, so the flag
+     * stays off for every instance that owns its whole history.
+     */
+    togglePreClaim() {
+        this.state.filter.include_pre_claim = !this.state.filter.include_pre_claim;
+        this.loadHistory();
     }
 
     // ───────────── Filters ─────────────

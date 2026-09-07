@@ -5,6 +5,7 @@ from datetime import timedelta
 from odoo import _, api, fields, models
 
 from ._repo_requirements import _normalize_url, is_safe_git_ref
+from .res_users_ext import as_platform
 
 _logger = logging.getLogger(__name__)
 
@@ -292,6 +293,11 @@ class CloudGitHubEvent(models.Model):
         :param dict payload: the decoded webhook body
         """
         self.ensure_one()
+        # Belt and braces with the webhook controller, which already
+        # elevates: dispatching is what enqueues the fleet rebuilds, so
+        # any *other* caller — a replay tool, a shell reprocessing a
+        # stuck event — must not end up as their author either.
+        self = as_platform(self)
         if self.event_type == 'installation':
             self._process_installation_lifecycle(payload)
         elif self.event_type == 'push':

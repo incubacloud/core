@@ -6,6 +6,56 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.0.116] — 2026-09-07
+
+### Fixed
+
+- **A brand-new tenant opened on months of somebody else's history.** A warm
+  spare keeps its `cloud.instance` record when a tenant claims it, so the job
+  list of a one-hour-old tenant began with the weeks of pool rebuilds and
+  health checks logged before the handover — 107 foreign rows ahead of its own
+  9, with nothing marking the boundary. `cloud.instance._job_history_floor()`
+  is a new hook (`False` in core: an instance normally owns its whole history)
+  that `cloud.job` now honours in both the instance timeline and the history
+  page. Jobs older than the floor are hidden, counted, and one click away —
+  they stay in the database, because the machine is the same machine and those
+  failures still explain today's.
+- **The warm spare built during a signup was stamped with the customer.** The
+  pool refills eagerly from inside the signup request so the next customer does
+  not wait for the cron, and `sudo()` raises privileges without changing
+  `env.uid` — so the project, instance and build job of the *next* customer's
+  spare all carried the current one's user. Four weeks later that spare was
+  handed to somebody else, who found a stranger listed as its author. Warm
+  builds now run as the platform's own bot, the same user the pool crons
+  already use. `res.users._get_cron_bot()` exposes it (XML-id first, login
+  fallback, empty rather than raising).
+- **The same bug, twice more, found by auditing every platform table in
+  production.** `sudo()` raises privileges but leaves `env.uid` alone, so
+  any work the platform does inside somebody else's request is authored by
+  them — and that author reaches `queue_job.user_id`, meaning the executor
+  *runs* as them and every row it writes inherits it.
+  - The **GitHub webhook** is `auth="public"`, so a push to core produced
+    348 fleet-rebuild jobs, 357 `queue_job` rows and 192,523 log chunks all
+    authored by the public user. Elevated in the controller and again in
+    `cloud.github.event._dispatch`, so a replay or a shell reprocessing a
+    stuck event is covered too.
+  - **Alerts** inherited whichever producer tripped them: 16 `job_failed`
+    from the public user, and a customer listed as the author of a
+    `metrics_acl_sync_failed` on infrastructure they never saw. Elevating
+    inside `raise_alert`/`resolve_alert` covers all 19 call sites at once.
+  - The **tenant→master API** (`/saas/*`, token-authenticated so `env.uid`
+    is the public user) now elevates in `_resolve_tenant`; its create sites
+    go through `tenant.env`. The tenant is still named by `tenant_id` on
+    every row — what changes is who *acted*.
+  - The **tenant OIDC client**, a platform credential, was authored by the
+    tenant it authenticates (14 rows).
+  `as_platform()` is the single helper for all of this: elevate once at the
+  entry point and the whole chain below inherits it. A structural test
+  (`test_platform_actor_invariant`) now fails the build if an
+  `auth="public"`/`"none"` route enqueues, dispatches or raises an alert
+  without it — verified to flag the webhook as it was written before this
+  release.
+
 ## [1.0.115] — 2026-09-06
 
 ### Fixed

@@ -644,7 +644,9 @@ class CloudJob(models.Model):
         }
 
     @api.model
-    def _get_instance_timeline(self, instance_id, max_visible=5):
+    def _get_instance_timeline(
+        self, instance_id, max_visible=5, include_pre_claim=False,
+    ):
         """Return instance jobs formatted for the vertical activity timeline.
 
         Active jobs (running/waiting chains) are returned in execution order
@@ -657,14 +659,22 @@ class CloudJob(models.Model):
         the running job to the bottom and shows only the next-in-queue jobs
         above it, with an overflow slot at the top.
 
-        Returns ``{active, recent, total}`` where *active* and *recent* are
-        lists of ``_format()`` dicts.
+        Jobs older than the instance's ``_job_history_floor()`` are left
+        out unless *include_pre_claim* asks for them; ``preClaim`` says
+        how many were hidden so the caller can offer to show them.
+
+        Returns ``{active, recent, total, preClaim}`` where *active* and
+        *recent* are lists of ``_format()`` dicts.
         """
         hidden = self._get_hidden_job_types()
         base = [
             ("instance_id", "=", instance_id),
             ("job_type_id.code", "not in", hidden),
         ]
+        pre_claim = self._pre_claim_cut(
+            instance_id, base, include_pre_claim=include_pre_claim,
+        )
+        base = base + pre_claim["domain"]
         active = self.search(
             base + [("state", "in", self._active_states)],
             order="id asc",
@@ -682,16 +692,64 @@ class CloudJob(models.Model):
             "active": active._format(),
             "recent": recent._format(),
             "total": total,
+            "preClaim": pre_claim["info"],
         }
 
     @api.model
-    def get_instance_jobs(self, instance_id, limit=20, offset=0):
+    def _pre_claim_cut(self, instance_id, base_domain, include_pre_claim=False):
+        """Resolve the job-history cutoff for one instance.
+
+        Central so the instance timeline and the history page draw the
+        same line: everything logged against the record before
+        :meth:`cloud.instance._job_history_floor` belongs to a previous
+        life of the same machine.
+
+        The count of what gets hidden is only computed when a cutoff
+        actually applies, so instances without one (every instance, in
+        core) pay nothing for this.
+
+        :param instance_id: id of the target ``cloud.instance``.
+        :param base_domain: the caller's domain, used to count the
+            hidden jobs under the same filters the visible ones use.
+        :param include_pre_claim: when true, resolve the cutoff for
+            display but do not filter by it.
+        :return: ``{"domain": [...], "info": {...} | False}`` — the leaf
+            to append (empty when nothing is cut) and what the UI needs
+            to offer the "show everything" toggle.
+        """
+        instance = self.env["cloud.instance"].browse(int(instance_id)).exists()
+        floor = instance._job_history_floor() if instance else False
+        if not floor:
+            return {"domain": [], "info": False}
+        hidden_count = self.search_count(
+            base_domain + [("create_date", "<", floor)],
+        )
+        if not hidden_count:
+            return {"domain": [], "info": False}
+        info = {
+            "since": fields.Datetime.to_string(floor),
+            "hidden": hidden_count,
+            "showing_all": bool(include_pre_claim),
+        }
+        if include_pre_claim:
+            return {"domain": [], "info": info}
+        return {"domain": [("create_date", ">=", floor)], "info": info}
+
+    @api.model
+    def get_instance_jobs(
+        self, instance_id, limit=20, offset=0, include_pre_claim=False,
+    ):
         """Return jobs for a specific instance (for the instance overview)."""
-        data = self._get_instance_timeline(instance_id, max_visible=limit)
+        data = self._get_instance_timeline(
+            instance_id,
+            max_visible=limit,
+            include_pre_claim=include_pre_claim,
+        )
         return {
             "activeJobs": data["active"],
             "recentJobs": data["recent"],
             "total": data["total"],
+            "preClaim": data["preClaim"],
         }
 
     @api.model
@@ -1316,8 +1374,13 @@ class CloudJob(models.Model):
           - ``"operational"`` (default) — excludes admin background jobs
           - ``"admin"`` — only admin background jobs (host_metrics, docker_prune, …)
           - ``"all"`` — no category restriction
+
+        When scoped to a single instance, jobs older than that
+        instance's ``_job_history_floor()`` are hidden and summarised in
+        ``preClaim``; ``filters.include_pre_claim`` brings them back.
         """
         domain = []
+        pre_claim = False
         job_id = (filters or {}).get("job_id")
         if job_id:
             # Direct job lookup — bypass all other filters
@@ -1347,6 +1410,19 @@ class CloudJob(models.Model):
                 domain.append(("job_type_id.code", "in", admin_types))
             # "all" → no category filter
 
+            # Scoped to one instance: hide what predates the handover,
+            # under the same category/state filters the visible jobs
+            # use, so the count in the notice matches what the toggle
+            # would actually reveal.
+            if filters and filters.get("instance_id"):
+                cut = self._pre_claim_cut(
+                    filters["instance_id"],
+                    domain,
+                    include_pre_claim=bool(filters.get("include_pre_claim")),
+                )
+                domain = domain + cut["domain"]
+                pre_claim = cut["info"]
+
         jobs = self.search(domain, order="id desc", limit=200)
         hosts = self.env["cloud.host"].search([], order="name asc")
         instances = self.env["cloud.instance"].search(
@@ -1365,6 +1441,7 @@ class CloudJob(models.Model):
                 for i in instances
             ],
             "users": [{"id": u.id, "name": u.name} for u in user_ids],
+            "preClaim": pre_claim,
         }
 
     def _format_history(self):

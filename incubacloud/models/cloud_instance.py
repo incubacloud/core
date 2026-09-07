@@ -1044,6 +1044,27 @@ class CloudInstance(models.Model):
             svcs.append("smtp")
         return tuple(svcs)
 
+    def _job_history_floor(self):
+        """Datetime before which this instance's jobs belong to another life.
+
+        An instance record normally owns its whole job history: it was
+        created for one purpose and kept it, so there is no boundary to
+        draw and this returns ``False``.
+
+        The hook exists for layers that *recycle* an instance record —
+        the SaaS warm pool hands a pre-built instance to a tenant that
+        had nothing to do with the months of pool maintenance already
+        logged against it. Those jobs are still true of the machine and
+        worth keeping, but showing them unannounced makes a brand-new
+        tenant look like it has a long and foreign past. Returning a
+        cutoff here makes the job history default to what happened
+        after the handover, with the earlier jobs one click away.
+
+        :return: a ``fields.Datetime`` value, or ``False`` for no cutoff.
+        """
+        self.ensure_one()
+        return False
+
     def deploy(self):
         """Enqueue a deploy_instance job for this instance."""
         self.ensure_one()

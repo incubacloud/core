@@ -324,6 +324,29 @@ $gantt-row-h: 44px;
 
 // ── Table ─────────────────────────────────────────────────────────────────────
 
+// ── Pre-handover notice ──────────────────────────────────────────────────────
+// Sits above the table so it is visible even when the cut leaves the
+// current page empty — which is exactly when it explains the most.
+.jh-preclaim {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border: 1px solid $border;
+    border-radius: 8px;
+    background: $surface-light;
+    color: $text-secondary;
+    font-size: 12.5px;
+
+    .jh-preclaim-icon {
+        color: $state-neutral;
+        flex: 0 0 auto;
+    }
+
+    span { flex: 1 1 auto; }
+    button { flex: 0 0 auto; }
+}
+
 .jh-table-wrap {
     overflow: hidden;
     flex: 1;

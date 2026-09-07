@@ -200,6 +200,33 @@
             </t>
         </div>
 
+        <!-- ── Pre-handover notice ── -->
+        <t t-if="state.preClaim">
+            <div class="jh-preclaim">
+                <span class="jh-preclaim-icon"><i class="fa fa-history"/></span>
+                <t t-if="state.preClaim.showing_all">
+                    <span>
+                        Showing <t t-esc="state.preClaim.hidden"/> job<t t-if="state.preClaim.hidden !== 1">s</t>
+                        logged before this instance was handed over on
+                        <t t-esc="formatDate(state.preClaim.since)"/>.
+                    </span>
+                    <button class="rl-btn rl-btn-ghost rl-btn-sm" t-on-click="() => this.togglePreClaim()">
+                        Hide earlier history
+                    </button>
+                </t>
+                <t t-else="">
+                    <span>
+                        <t t-esc="state.preClaim.hidden"/> earlier job<t t-if="state.preClaim.hidden !== 1">s</t>
+                        hidden — logged before this instance was handed over on
+                        <t t-esc="formatDate(state.preClaim.since)"/>.
+                    </span>
+                    <button class="rl-btn rl-btn-ghost rl-btn-sm" t-on-click="() => this.togglePreClaim()">
+                        Show earlier history
+                    </button>
+                </t>
+            </div>
+        </t>
+
         <!-- ── Table ── -->
         <div class="rl-card jh-table-wrap">
             <t t-if="!state.jobs.length">

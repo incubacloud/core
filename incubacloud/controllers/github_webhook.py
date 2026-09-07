@@ -30,6 +30,7 @@ from psycopg2 import errors as pg_errors
 from odoo import http
 from odoo.http import request
 
+from ..models.res_users_ext import as_platform
 from ._client_ip import client_ip
 from ._rate_limit import Rule, first_tripped
 
@@ -173,7 +174,14 @@ class GitHubWebhookController(http.Controller):
         # skipped here to avoid double rebuilds / PR churn.
         try:
             with request.env.cr.savepoint():
-                event = request.env["cloud.github.event"].sudo().create({
+                # The route is ``auth="public"``, and ``sudo()`` does not
+                # change ``env.uid`` — so without this the event, the
+                # fleet rebuilds it dispatches, their ``queue_job`` rows
+                # and every log chunk those executors wrote were all
+                # authored by the public user. GitHub pushed; the
+                # platform acted.
+                Event = as_platform(request.env["cloud.github.event"])
+                event = Event.create({
                     "event_type": event_type,
                     "action": action,
                     "delivery_id": delivery_id,

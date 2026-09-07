@@ -105,6 +105,9 @@ from . import test_session_reconcile
 from . import test_backup_kind
 from . import test_alert_resolution_notify
 from . import test_job_duration_watch
+from . import test_job_history_floor
+from . import test_platform_actor
+from . import test_platform_actor_invariant
 from . import test_job_purge
 from . import test_rate_limit_gate
 from . import test_config_drift

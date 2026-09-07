@@ -14,6 +14,39 @@ CRON_BOT_LOGIN = "__incubacloud_cron__"
 CRON_BOT_XML_ID = "incubacloud.user_incubacloud_cron"
 
 
+def as_platform(records):
+    """Re-bind *records* so the platform, not the caller, is the author.
+
+    Odoo's ``sudo()`` raises privileges but leaves ``env.uid`` alone, so
+    work the platform does on its own account inside somebody's request
+    — refilling the warm pool during a signup, rebuilding the fleet from
+    a GitHub push, filing an alert — is stamped with whoever happened to
+    trigger it. That author then outlives the request: it lands on the
+    record, on ``queue_job.user_id`` (so the executor *runs* as them),
+    and on every row that executor writes. Customers have shown up as
+    the authors of machines they never saw, and the public user as the
+    author of 348 fleet rebuilds.
+
+    Elevate once at the entry point and the whole chain below inherits
+    the bot; there is no need to wrap individual ``create`` calls.
+
+    ``sudo()`` comes after ``with_user`` deliberately: ``with_user``
+    resets ``su``, and every caller here already held it. This changes
+    *identity*, never privilege.
+
+    Degrades to the caller's own environment when the bot cannot be
+    resolved — a missing bot should cost a slightly wrong ``create_uid``,
+    not the operation.
+
+    :param records: any recordset (its ``env`` is what gets rebound).
+    :return: the same recordset bound to the platform bot.
+    """
+    bot = records.env['res.users']._get_cron_bot()
+    if not bot:
+        return records
+    return records.with_user(bot).sudo()
+
+
 class ResUsers(models.Model):
     _inherit = 'res.users'
 
@@ -274,6 +307,27 @@ class ResUsers(models.Model):
             'alert_count': len(alert_rows),
             'console_url': f'{base_url}/cloud/ui',
         }
+
+    @api.model
+    def _get_cron_bot(self):
+        """Return the platform's own user, or an empty recordset.
+
+        This is the user the scheduled actions already run as. It is
+        also the right actor for any unattended work the platform does
+        on its own account outside a cron — building a warm spare while
+        serving a customer's request, say — so ``create_uid`` keeps
+        meaning "who wanted this" rather than "who happened to be
+        logged in when the platform did its housekeeping".
+
+        Resolved by XML-id with a login fallback, mirroring
+        :meth:`_incubacloud_ensure_cron_bot`, and returns empty rather
+        than raising: a caller that cannot find the bot should carry on
+        with a slightly wrong ``create_uid``, not fail the operation.
+        """
+        bot = self.env.ref(CRON_BOT_XML_ID, raise_if_not_found=False)
+        if bot:
+            return bot
+        return self.sudo().search([('login', '=', CRON_BOT_LOGIN)], limit=1)
 
     @api.model
     def _incubacloud_ensure_cron_bot(self):

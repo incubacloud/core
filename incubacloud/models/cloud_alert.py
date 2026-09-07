@@ -13,6 +13,7 @@ from odoo.tools import config as odoo_config
 
 from ..github.http_utils import safe_urlopen
 from ..net.outbound import post_json
+from .res_users_ext import as_platform
 
 _logger = logging.getLogger(__name__)
 
@@ -221,6 +222,12 @@ class CloudAlert(models.Model):
         :returns: the active ``cloud.alert`` record, or an empty
             recordset when a concurrent producer filed it first
         """
+        # An alert is the platform noticing something, never a user
+        # action — but it is raised from wherever the failure happened,
+        # which may be a public webhook or a customer's signup request.
+        # Elevating here covers every producer at once, present and
+        # future, instead of asking each of the callers to remember.
+        self = as_platform(self)
         existing = self.search(
             self._dedup_domain(code, host=host, instance=instance), limit=1,
         )
@@ -264,6 +271,10 @@ class CloudAlert(models.Model):
 
         :returns: the dismissed records (empty when there was nothing)
         """
+        # Same reasoning as ``raise_alert``: an automatic dismissal is
+        # the platform closing its own incident, so ``write_uid`` must
+        # not name whoever's request happened to clear the condition.
+        self = as_platform(self)
         active = self.search(
             self._dedup_domain(code, host=host, instance=instance),
         )
