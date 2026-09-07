@@ -23,11 +23,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   readers of that output are anchored to the start of the line on purpose:
   one so asyncssh's echo of the scrape is never harvested as an error, the
   other so only a real Odoo record is counted. The fallback error scrape
-  therefore produced no groups at all — an instance that has not been
-  rebuilt since file logging shipped could never raise
-  `instance_error_logs` — and the counter behind `instance_logs_unhealthy`
-  (`fallback`, Odoo unable to write to the log file) read zero on every
-  instance since it shipped. Both readings now pass `--no-log-prefix`.
+  therefore produced no groups at all. Until 1.0.75 the parser had no
+  notion of a header — it fingerprinted every line the grep returned, so
+  the prefix did not matter; the instance still on that branch raised 73
+  error alerts up to 16 August 2026 and not one since, while the rest of
+  the fleet kept alerting. The counter behind `instance_logs_unhealthy`
+  (`fallback`, Odoo unable to write to the log file) has read zero on
+  every instance since the day it shipped. Both readings now pass
+  `--no-log-prefix`.
 
 ## [1.0.117] — 2026-09-07
 
