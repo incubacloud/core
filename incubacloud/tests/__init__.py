@@ -121,6 +121,7 @@ from . import test_error_log_context
 from . import test_error_alert_quiet_window
 from . import test_config_snapshot_frozen
 from . import test_deploy_override_logging
+from . import test_deploy_override_smtp_update_check
 from . import test_instance_log_archive
 from . import test_instance_log_health
 from . import test_instance_log_commands

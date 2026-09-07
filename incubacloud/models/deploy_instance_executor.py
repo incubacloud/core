@@ -450,6 +450,11 @@ class DeployInstanceExecutor(AbstractSSHExecutor):
         logrotate, which is the copy that survives a rebuild. See
         :meth:`_odoo_command` for why the flag rides on the command.
 
+        The ``smtp`` service gets ``ENABLE_UPDATE_CHECK=0``. It belongs
+        in the override rather than in ``.docker/smtp.env`` or the
+        compose files because ``copier update`` regenerates all three on
+        every rebuild, which would drop it.
+
         Every service also carries a ``logging:`` block (``json-file``
         with the ``max-size``/``max-file`` from ``cloud.settings``).
         doodba's Odoo logs to stdout and the copier template sets no
@@ -536,6 +541,18 @@ class DeployInstanceExecutor(AbstractSSHExecutor):
                     "max-file": str(settings.container_log_max_file),
                 },
             }
+        if "smtp" in allowed:
+            # docker-mailserver runs an ``update-check`` service that asks
+            # GitHub for the latest release and mails postmaster once per
+            # container start. Which tag an instance runs is the panel's
+            # call (``smtp_relay_version``), not the container's to
+            # announce — and the announcement arrived at fleet scale:
+            # copier renders the hostname as ``smtp.<relay domain>``, so
+            # every instance relaying through the same domain reports
+            # itself under one name, and a free tenant restarts on each
+            # Sablier wake, turning "once per start" into dozens of
+            # identical mails a day.
+            services["smtp"]["environment"] = {"ENABLE_UPDATE_CHECK": "0"}
         if "odoo" in allowed:
             services["odoo"]["command"] = self._odoo_command()
             services["odoo"]["volumes"] = [

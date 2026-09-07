@@ -6,6 +6,27 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.0.117] — 2026-09-07
+
+### Fixed
+
+- **Every instance's mail container announced its own updates, under the same
+  name.** docker-mailserver ships an `update-check` service that asks GitHub
+  for the latest release and mails postmaster once per container start. Which
+  tag an instance runs is the panel's call (`smtp_relay_version`), so the
+  announcement is advice the container cannot act on — and it arrived at fleet
+  scale: copier renders the hostname as `smtp.<relay domain>`, so all twelve
+  instances relaying through one domain reported themselves as the same host,
+  and a free tenant restarts on every Sablier wake, turning "once per start"
+  into dozens of identical mails a day at the postmaster address. The compose
+  override the panel writes now sets `ENABLE_UPDATE_CHECK=0` on the `smtp`
+  service. It goes there rather than in `.docker/smtp.env` or the compose
+  files because `copier update` regenerates all three on every rebuild, which
+  would drop it. The switch lands on each instance at its next deploy or
+  rebuild.
+
+---
+
 ## [1.0.116] — 2026-09-07
 
 ### Fixed
