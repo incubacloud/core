@@ -25,8 +25,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   would drop it. The switch lands on each instance at its next deploy or
   rebuild.
 
----
-
 ## [1.0.116] — 2026-09-07
 
 ### Fixed
@@ -112,6 +110,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **The job that retires stored certificates did not check that it had.** The write reports the exit status of a shell redirection, which succeeds over a store that ends up truncated and says nothing about whether the proxy came back — so the job could report success while the host went on serving exactly the certificates it was told to stop serving, which is the silence the retirement exists to end. It now reads the store back once the proxy is up and fails the job if a retired name is still there, if the document does not parse, or if it cannot be read at all. Reading it through the container also answers a question nothing asked before: a container that is not running cannot be read from, so a restart that did not take is now a failure rather than a green step.
 
 - **The scheduled-action watchdog cried wolf on every deploy.** It measured how long a cron had been stopped from `lastcall` — when it last *ran* — so a cron that runs once a day was six hours stale while working perfectly, and the deploy pipeline pausing it for a few minutes was enough to report it. Measured on 6 September: one alert naming twenty-nine scheduled actions, raised mid-window, with the fleet healthy. Noise on this particular alert is expensive, because it is the only thing that notices work silently not happening. It now measures against `nextcall` — when the cron was due to run next — which a pause leaves untouched: a daily cron paused during a deploy window is still hours from due and says nothing, while one left switched off falls behind and speaks up. Crons that have never run stay excluded, as before.
+
+
+### Removed
+
+- **The hourly watchdog for switched-off scheduled actions, and its
+  `crons_disabled` alert.** It existed to notice the one thing a killed
+  `deploy-update` could leave behind: our crons paused, and nobody left to
+  switch them back on. That failure is now impossible rather than detected:
+  before pausing anything, the pipeline arms a timer on the host itself, and
+  the host switches them back on if the run never gets to. A detector for a
+  hazard our own tooling created belonged in the tooling — not in every
+  database this module is installed in, where it ran every hour on each
+  tenant watching thirty crons that nothing ever pauses. The alert history
+  keeps the rows it raised; nothing raises that code any more.
 
 ---
 

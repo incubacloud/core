@@ -28,7 +28,6 @@ S3 backups, GitHub webhook integration, and a full OWL single-page application.
         "security/cloud_rules.xml",
         # Data
         "data/job_type.xml",
-        "data/cron_watch_cron.xml",
         "data/host_metrics_cron.xml",
         "data/observability_reconcile_cron.xml",
         "data/docker_prune_cron.xml",
