@@ -49,6 +49,20 @@ _LONG_TRACEBACK = [
     'access the field "core_saas_url" on IncubaCloud Settings.',
 ]
 
+#: What ``grep -A`` prints once the traceback is over: the next log
+#: records, at whatever level. Alert 3115 (7-sep-2026) kept thirteen of
+#: these under its ERROR and the exception as line 1 of a 14-line tail.
+_AFTERMATH = [
+    f"2026-09-07 08:34:{n:02d},000 7 INFO prod werkzeug: "
+    f'192.0.2.{n} - - [07/Sep/2026 08:34:{n:02d}] '
+    '"POST /websocket HTTP/1.1" 200 -'
+    for n in range(13)
+]
+_WARNING_LINE = (
+    "2026-08-16 17:50:04,000 7 WARNING prod odoo.addons.base: "
+    "something unrelated"
+)
+
 _TEMPLATE = (
     pathlib.Path(__file__).resolve().parent.parent
     / "static" / "src" / "components" / "alert_history" / "alert_history.xml"
@@ -138,6 +152,49 @@ class TestErrorLogContext(TransactionCase):
             len(context), _ERROR_CONTEXT_TAIL + 10,
             "the compacted form must stay small enough to read",
         )
+
+    def test_the_next_log_record_ends_the_traceback(self):
+        """``grep -A`` counts lines, not frames.
+
+        What follows a traceback is the next log record, and filing it
+        under the ERROR spends the tail budget on werkzeug requests:
+        alert 3115 kept the exception as line 1 of 14, one request away
+        from losing it — the defect this module exists to prevent, back
+        by another door.
+        """
+        groups = self._groups("\n".join([
+            _HEADER, *_LONG_TRACEBACK, *_AFTERMATH,
+        ]))
+        self.assertEqual(len(groups), 1)
+        context = groups[0]["context"]
+        self.assertIn("AccessError", context[-1])
+        self.assertFalse(
+            [line for line in context if "werkzeug" in line],
+            "log records after the traceback are not its context",
+        )
+
+    def test_a_record_at_any_level_closes_the_group(self):
+        """A WARNING closes the group like ``--`` does, whatever comes
+        after it belongs to that record, and a later ERROR still opens
+        a group of its own with a clean context."""
+        groups = self._groups("\n".join([
+            _HEADER, *_TRACEBACK,
+            _WARNING_LINE,
+            "  continuation of the warning, no level field",
+            _SECOND_HEADER,
+            "Traceback (most recent call last):",
+            "KeyError: 'x'",
+        ]))
+        self.assertEqual(len(groups), 2)
+        first = next(
+            g for g in groups if "ValueError: boom" in "\n".join(g["context"])
+        )
+        self.assertNotIn("continuation", "\n".join(first["context"]))
+        second = next(
+            g for g in groups if "KeyError" in "\n".join(g["context"])
+        )
+        self.assertEqual(second["count"], 1)
+        self.assertEqual(second["context"][-1], "KeyError: 'x'")
 
     def test_runaway_context_is_capped(self):
         """A log loop must not inflate the serialized payload."""

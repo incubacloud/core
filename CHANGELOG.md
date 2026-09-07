@@ -6,6 +6,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.0.118] — 2026-09-08
+
+### Fixed
+
+- **The error scrape kept reading past the end of the traceback.** `grep -A`
+  prints a fixed number of lines after each ERROR header, and the parser
+  filed everything that was not another ERROR as context — including the
+  INFO records logged after the failure. Those spent the tail budget that
+  1.0.115 introduced to keep the exception: in a real alert the exception
+  was line 1 of a 14-line tail, thirteen werkzeug requests behind it. A
+  group now closes at the next log record of any level, as it already did
+  at grep's own `--` marker.
+
 ## [1.0.117] — 2026-09-07
 
 ### Fixed

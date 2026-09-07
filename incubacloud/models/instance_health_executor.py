@@ -123,6 +123,15 @@ _ERROR_HEADER_RE = re.compile(
     r'^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}[.,]\d+\s+\d+\s+'
     r'(ERROR|CRITICAL)\s'
 )
+# Any Odoo log record, at any level. ``grep -A`` keeps printing for a
+# fixed number of lines after each ERROR header, so once the traceback
+# is over what arrives is simply the next record — INFO more often than
+# not. That is not context: filing it under the header spent the tail
+# budget that exists to keep the exception itself.
+_LOG_LINE_RE = re.compile(
+    r'^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}[.,]\d+\s+\d+\s+'
+    r'(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s'
+)
 
 
 class InstanceHealthExecutor(AbstractSSHExecutor):
@@ -577,7 +586,10 @@ class InstanceHealthExecutor(AbstractSSHExecutor):
         ``_ERROR_HEADER_RE`` and anything else is filed as context of the
         header above it. ``count`` therefore still counts ERROR lines,
         not log lines. Blocks are separated by grep's own ``--`` marker,
-        which closes the context of whatever preceded it.
+        which closes the context of whatever preceded it — and so does
+        the next log record of any level (``_LOG_LINE_RE``): ``grep -A``
+        counts lines, not frames, so what follows a traceback is what
+        happened next, not what explains it.
         """
         groups = {}
         order = []
@@ -588,7 +600,10 @@ class InstanceHealthExecutor(AbstractSSHExecutor):
                 current = None
                 continue
             if not _ERROR_HEADER_RE.match(line):
-                if current is not None:
+                if _LOG_LINE_RE.match(line):
+                    # The next record: the traceback above ended here.
+                    current = None
+                elif current is not None:
                     self._append_context(current, line)
                 continue
             fp = self._fingerprint(line)
