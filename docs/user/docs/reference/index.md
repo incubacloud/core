@@ -16,6 +16,7 @@ Per-screen documentation for the IncubaCloud SPA at `/cloud`.
 - [Billing](../billing/index.md) — plans, invoices, subscription changes.
 - [Migrations](../migrations/index.md) — bringing data from elsewhere.
 - [Notifications](notifications.md) — in-app, email, Telegram and webhook channels.
+- [Service limits](limits.md) — request size and duration on the hosted service.
 
 ## Coming soon
 

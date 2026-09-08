@@ -66,6 +66,10 @@ ready-to-use backup backend. Three tiers:
 | Standard | 100 GB | 8.99 € | 0.04 €/GB |
 | Pro | 500 GB | 29.99 € | 0.03 €/GB |
 
+The bucket lives on **Cloudflare R2 in the European Union**, and the backups in
+it are encrypted with your passphrase before they leave the host — see
+[Service limits](../reference/limits.md#where-managed-backups-are-stored).
+
 Usage is measured periodically; storage beyond the included amount is billed as
 overage on your subscription invoice. If you cancel the add-on, backups are kept
 for a 30-day retention window before the bucket is purged. Downgrading to a

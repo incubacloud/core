@@ -12,6 +12,12 @@ one filestore. It belongs to a project and runs on a host.
   without traffic to save resources. Wakes up on the next request (the first request
   after a nap takes a few seconds).
 
+!!! info "IncubaCloud SaaS"
+    Instances on the hosted service are served through a CDN, which caps a single
+    request at **100 MB** and at **100 seconds** to first byte. See
+    [Service limits](../reference/limits.md) for what to use instead when you hit
+    either one.
+
 ## Lifecycle
 
 ```
