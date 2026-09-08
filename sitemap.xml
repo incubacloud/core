@@ -2,78 +2,82 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
          <loc>https://docs.incubacloud.io/</loc>
-         <lastmod>2026-09-04</lastmod>
+         <lastmod>2026-09-08</lastmod>
     </url>
     <url>
          <loc>https://docs.incubacloud.io/backups/</loc>
-         <lastmod>2026-09-04</lastmod>
+         <lastmod>2026-09-08</lastmod>
     </url>
     <url>
          <loc>https://docs.incubacloud.io/backups/restore/</loc>
-         <lastmod>2026-09-04</lastmod>
+         <lastmod>2026-09-08</lastmod>
     </url>
     <url>
          <loc>https://docs.incubacloud.io/billing/</loc>
-         <lastmod>2026-09-04</lastmod>
+         <lastmod>2026-09-08</lastmod>
     </url>
     <url>
          <loc>https://docs.incubacloud.io/getting-started/</loc>
-         <lastmod>2026-09-04</lastmod>
+         <lastmod>2026-09-08</lastmod>
     </url>
     <url>
          <loc>https://docs.incubacloud.io/getting-started/first-deploy/</loc>
-         <lastmod>2026-09-04</lastmod>
+         <lastmod>2026-09-08</lastmod>
     </url>
     <url>
          <loc>https://docs.incubacloud.io/getting-started/first-project/</loc>
-         <lastmod>2026-09-04</lastmod>
+         <lastmod>2026-09-08</lastmod>
     </url>
     <url>
          <loc>https://docs.incubacloud.io/getting-started/signup/</loc>
-         <lastmod>2026-09-04</lastmod>
+         <lastmod>2026-09-08</lastmod>
     </url>
     <url>
          <loc>https://docs.incubacloud.io/hosts/</loc>
-         <lastmod>2026-09-04</lastmod>
+         <lastmod>2026-09-08</lastmod>
     </url>
     <url>
          <loc>https://docs.incubacloud.io/hosts/connect/</loc>
-         <lastmod>2026-09-04</lastmod>
+         <lastmod>2026-09-08</lastmod>
     </url>
     <url>
          <loc>https://docs.incubacloud.io/hosts/hire/</loc>
-         <lastmod>2026-09-04</lastmod>
+         <lastmod>2026-09-08</lastmod>
     </url>
     <url>
          <loc>https://docs.incubacloud.io/instances/</loc>
-         <lastmod>2026-09-04</lastmod>
+         <lastmod>2026-09-08</lastmod>
     </url>
     <url>
          <loc>https://docs.incubacloud.io/instances/logs/</loc>
-         <lastmod>2026-09-04</lastmod>
+         <lastmod>2026-09-08</lastmod>
     </url>
     <url>
          <loc>https://docs.incubacloud.io/migrations/</loc>
-         <lastmod>2026-09-04</lastmod>
+         <lastmod>2026-09-08</lastmod>
     </url>
     <url>
          <loc>https://docs.incubacloud.io/migrations/from-odoosh/</loc>
-         <lastmod>2026-09-04</lastmod>
+         <lastmod>2026-09-08</lastmod>
     </url>
     <url>
          <loc>https://docs.incubacloud.io/projects/</loc>
-         <lastmod>2026-09-04</lastmod>
+         <lastmod>2026-09-08</lastmod>
     </url>
     <url>
          <loc>https://docs.incubacloud.io/reference/</loc>
-         <lastmod>2026-09-04</lastmod>
+         <lastmod>2026-09-08</lastmod>
+    </url>
+    <url>
+         <loc>https://docs.incubacloud.io/reference/limits/</loc>
+         <lastmod>2026-09-08</lastmod>
     </url>
     <url>
          <loc>https://docs.incubacloud.io/reference/monitoring/</loc>
-         <lastmod>2026-09-04</lastmod>
+         <lastmod>2026-09-08</lastmod>
     </url>
     <url>
          <loc>https://docs.incubacloud.io/reference/notifications/</loc>
-         <lastmod>2026-09-04</lastmod>
+         <lastmod>2026-09-08</lastmod>
     </url>
 </urlset>

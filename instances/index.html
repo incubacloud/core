@@ -1034,6 +1034,8 @@
       
         
       
+        
+      
     
     
       
@@ -1110,6 +1112,27 @@
   
   <span class="md-ellipsis">
     Monitoring
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/limits/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Service limits
   </span>
   
 
@@ -1250,6 +1273,13 @@ one filestore. It belongs to a project and runs on a host.</p>
   without traffic to save resources. Wakes up on the next request (the first request
   after a nap takes a few seconds).</li>
 </ul>
+<div class="admonition info">
+<p class="admonition-title">IncubaCloud SaaS</p>
+<p>Instances on the hosted service are served through a CDN, which caps a single
+request at <strong>100 MB</strong> and at <strong>100 seconds</strong> to first byte. See
+<a href="../reference/limits/">Service limits</a> for what to use instead when you hit
+either one.</p>
+</div>
 <h2 id="lifecycle">Lifecycle<a class="headerlink" href="#lifecycle" title="Permanent link">&para;</a></h2>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>deploy → running → rebuild → running → ... → archive or delete
 </span></code></pre></div>
