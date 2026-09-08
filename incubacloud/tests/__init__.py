@@ -90,6 +90,7 @@ from . import (
     test_form_error_accessibility,
     test_observability_executors,
     test_traefik_metrics_retrofit,
+    test_traefik_frameguard_retrofit,
     test_traefik_ratelimit_retrofit,
     test_instance_liveness_metrics,
     test_host_metrics_retirement,

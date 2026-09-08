@@ -6,6 +6,32 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.0.119] — 2026-09-08
+
+### Added
+
+- **A host can now say who may put its pages in an iframe.** The public pages
+  of a host sent neither `frame-ancestors` nor `X-Frame-Options`, so anything
+  served there could be embedded and overlaid — the login routes were covered
+  by Odoo's own headers, the marketing and legal pages were not. `cloud.host`
+  gains `frame_ancestors`: a CSP source list rendered as a `frameguard`
+  middleware and referenced from the https entrypoint, which is the only place
+  a response header can be added once and reach every copier-generated router.
+
+  **Empty by default, and that is the point.** A tenant's own site may
+  legitimately be embedded by its customers, and this control reaches every
+  router on the host, so the capability ships here and the policy belongs to
+  whoever runs the host.
+
+  Two details that are deliberate. It **sets** rather than adds, like the
+  trusted-proxy render: the source list moves, and clearing it takes the header
+  back out. And it never sends `X-Frame-Options` alongside — that header cannot
+  express "myself and that other origin", so pairing them would block exactly
+  the embed the source list was written to allow, which matters when something
+  else on the same host is embedded by the panel.
+
+---
+
 ## [1.0.118] — 2026-09-08
 
 ### Fixed

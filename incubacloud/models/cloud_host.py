@@ -551,6 +551,20 @@ class CloudHost(models.Model):
              "because a direct request carries no forwarded chain to "
              "read.",
     )
+    frame_ancestors = fields.Char(
+        string="Frame Ancestors",
+        help="CSP ``frame-ancestors`` source list for every router on this "
+             "host, e.g. \"'self' https://panel.example.com\". Sets who may "
+             "put these pages inside an iframe; leave empty and no header "
+             "is sent, which is the default because a tenant's own site "
+             "may legitimately be embedded by its customers. Beware that "
+             "this is an entrypoint-wide control: it reaches every router "
+             "on the host, so anything else served here — a metrics "
+             "dashboard the panel embeds, say — has to appear in the list "
+             "or it stops rendering. ``X-Frame-Options`` is deliberately "
+             "not sent alongside: it cannot express \"self and that other "
+             "origin\", so pairing them would undo the exception.",
+    )
     trusted_proxy_ranges = fields.Text(
         string="Trusted Proxy Ranges",
         help="CIDR ranges of the proxies in front of this host, one per "
@@ -1901,6 +1915,183 @@ class CloudHost(models.Model):
         insert_at = match.start("body") + mw.end("items")
         return traefik_yml[:insert_at] + addition + traefik_yml[insert_at:]
 
+
+    # Every block the frame-guard render writes carries this marker, so a
+    # later render removes exactly what it wrote and nothing else. The
+    # value is a policy that changes — a new origin starts embedding the
+    # panel, or the feature is turned off — so this has to *set* the
+    # middleware, not add it once.
+    _FRAMEGUARD_MARK = "# incubacloud:frameguard"
+
+    #: File-provider middleware naming who may frame this host's pages.
+    _FRAMEGUARD_MIDDLEWARE = "frameguard"
+
+    @staticmethod
+    def _strip_frameguard_blocks(text):
+        """Remove every block a previous frame-guard render wrote.
+
+        A marked line takes the lines nested under it with it, so the whole
+        ``headers`` mapping disappears together. A blank line ends a block:
+        nothing written here contains one.
+
+        :param text: a Traefik configuration document.
+        :return: the document without any marked block.
+        :rtype: str
+        """
+        if not text or CloudHost._FRAMEGUARD_MARK not in text:
+            return text
+        lines = text.splitlines(keepends=True)
+        kept = []
+        index = 0
+        while index < len(lines):
+            line = lines[index]
+            if CloudHost._FRAMEGUARD_MARK not in line:
+                kept.append(line)
+                index += 1
+                continue
+            indent = len(line) - len(line.lstrip())
+            index += 1
+            while index < len(lines) and lines[index].strip():
+                nested = len(lines[index]) - len(lines[index].lstrip())
+                if nested <= indent:
+                    break
+                index += 1
+        return "".join(kept)
+
+    @staticmethod
+    def _set_traefik_frameguard_middleware(config_yml, sources):
+        """Return ``config.yml`` with the ``frameguard`` middleware set.
+
+        Idempotent by replacement rather than by addition: *sources* is a
+        policy that moves, and a stale allow-list is the failure this must
+        not produce. An empty *sources* removes the middleware and returns
+        the host to sending no frame header at all.
+
+        Only ``Content-Security-Policy`` is written, never
+        ``X-Frame-Options``. The latter has no syntax for "myself and that
+        other origin" — ``ALLOW-FROM`` is gone from current browsers — so
+        sending it alongside would block precisely the embed the source
+        list was written to keep.
+
+        Anchored on ``http:`` so a ``middlewares:`` belonging to a router
+        further down is never the one extended, and indented from the key
+        it found so a differently indented template still parses. A no-op
+        when the file does not have the mapping this knows how to extend.
+
+        :param config_yml: the host's stored dynamic configuration.
+        :param sources: the ``frame-ancestors`` source list, or empty.
+        :return: the patched configuration, or the input untouched.
+        :rtype: str
+        """
+        import re
+
+        if not config_yml:
+            return config_yml
+        text = CloudHost._strip_frameguard_blocks(config_yml)
+        value = (sources or "").strip()
+        if not value:
+            return text
+        match = re.search(
+            r"^http:[ \t]*\n"
+            r"(?:[ \t]*\n)*"
+            r"(?P<indent>[ \t]+)middlewares:[ \t]*\n",
+            text,
+            re.MULTILINE,
+        )
+        if not match:
+            return text
+        i = match.group("indent")
+        # Quoted so a value carrying ``:`` or ``#`` — every URL does —
+        # stays one YAML scalar; single quotes are doubled, which is how
+        # YAML escapes them inside a single-quoted scalar.
+        escaped = value.replace("'", "''")
+        # The marker rides on the key line, not above it: the strip takes
+        # a marked line together with everything nested deeper, so a
+        # marker on its own line would remove itself and leave the
+        # mapping behind.
+        block = (
+            f"{i}  {CloudHost._FRAMEGUARD_MIDDLEWARE}:"
+            f"  {CloudHost._FRAMEGUARD_MARK}\n"
+            f"{i}    headers:\n"
+            f"{i}      contentSecurityPolicy: 'frame-ancestors {escaped}'\n"
+        )
+        return text[: match.end()] + block + text[match.end():]
+
+    @staticmethod
+    def _set_traefik_entrypoint_frameguard(traefik_yml, config_yml):
+        """Return ``traefik.yml`` referencing ``frameguard@file``, or not.
+
+        The third default middleware of the https entrypoint, alongside
+        HSTS and the rate limit, and it reaches the host the same way: the
+        per-project routers come from copier and reference nothing but
+        their own middlewares.
+
+        Interlocked with the middleware and fails closed, like its two
+        siblings — an entrypoint naming a middleware the file provider does
+        not define makes Traefik answer 500 on every router of that
+        entrypoint, the whole host. So *config_yml* decides: the reference
+        is written only when the middleware is defined there, and taken
+        back out when it is not, which is what turns the feature off.
+
+        :param traefik_yml: the host's stored static configuration.
+        :param config_yml: the host's stored dynamic configuration.
+        :return: the patched configuration, or the input untouched.
+        :rtype: str
+        """
+        import re
+
+        if not traefik_yml:
+            return traefik_yml
+        wanted = bool(config_yml) and bool(
+            re.search(
+                rf"^[ \t]+{CloudHost._FRAMEGUARD_MIDDLEWARE}:[ \t]*(?:#.*)?$",
+                config_yml,
+                re.MULTILINE,
+            )
+        )
+        present = bool(
+            re.search(
+                r"^[ \t]+-[ \t]+frameguard@file[ \t]*$",
+                traefik_yml,
+                re.MULTILINE,
+            )
+        )
+        if wanted == present:
+            return traefik_yml
+        if not wanted:
+            return "".join(
+                line
+                for line in traefik_yml.splitlines(keepends=True)
+                if not re.match(r"^[ \t]+-[ \t]+frameguard@file[ \t]*$",
+                                line.rstrip("\n"))
+            )
+        match = re.search(
+            r"^[ \t]+https:[ \t]*\n"
+            r"(?P<hindent>[ \t]+)http:[ \t]*\n"
+            r"(?P<body>(?:(?P=hindent)[ \t]+\S.*\n)*)",
+            traefik_yml,
+            re.MULTILINE,
+        )
+        if not match:
+            return traefik_yml
+        body = match.group("body")
+        mw = re.search(
+            r"^(?P<mindent>[ \t]+)middlewares:[ \t]*\n"
+            r"(?P<items>(?:(?P=mindent)[ \t]+-[ \t]+\S.*\n)+)",
+            body,
+            re.MULTILINE,
+        )
+        if not mw:
+            return traefik_yml
+        if "hsts@file" not in mw.group("items"):
+            # An operator's own chain, not the one we manage. Appending to
+            # it blind is how a retrofit breaks a proxy.
+            return traefik_yml
+        item_indent = re.match(r"[ \t]*", mw.group("items")).group(0)
+        addition = f"{item_indent}- frameguard@file\n"
+        insert_at = match.start("body") + mw.end("items")
+        return traefik_yml[:insert_at] + addition + traefik_yml[insert_at:]
+
     # Every block written by the trusted-proxy retrofits carries this
     # marker, so re-rendering can remove exactly what it wrote before and
     # nothing else. These lists move — a CDN publishes new ranges — so the
@@ -2574,6 +2765,36 @@ class CloudHost(models.Model):
                 vals["traefik_yml"] = with_ep_rl
                 _logger.info(
                     "Added Traefik https entrypoint ratelimit for host: %s",
+                    host.name,
+                )
+
+            # Frame guard. Off unless the host names who may embed it,
+            # because a tenant's own site may legitimately be framed by
+            # its customers and this control reaches every router here.
+            # Same interlocked pair, and it *sets* rather than adds: the
+            # source list moves, and clearing it has to take the header
+            # back out.
+            with_fg = self._set_traefik_frameguard_middleware(
+                vals.get("traefik_config_yml", host.traefik_config_yml),
+                host.frame_ancestors,
+            )
+            if with_fg != (
+                vals.get("traefik_config_yml", host.traefik_config_yml)
+            ):
+                vals["traefik_config_yml"] = with_fg
+                _logger.info(
+                    "Set Traefik frameguard middleware for host: %s",
+                    host.name,
+                )
+
+            with_ep_fg = self._set_traefik_entrypoint_frameguard(
+                vals.get("traefik_yml", host.traefik_yml),
+                vals.get("traefik_config_yml", host.traefik_config_yml),
+            )
+            if with_ep_fg != (vals.get("traefik_yml", host.traefik_yml)):
+                vals["traefik_yml"] = with_ep_fg
+                _logger.info(
+                    "Set Traefik https entrypoint frameguard for host: %s",
                     host.name,
                 )
 
