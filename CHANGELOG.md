@@ -6,6 +6,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.0.120] — 2026-09-09
+
+### Fixed
+
+- **Deleting an instance told the caller whether the id existed before it
+  checked whether they were allowed to ask.** `/cloud/delete_instance`
+  ran `exists()` first and answered "Instance not found" for an unused
+  id, while an id in use raised an access error — two distinguishable
+  answers, which is an oracle. `exists()` is raw SQL, so neither the
+  model ACL nor a record rule narrowed it: the oracle covered every
+  instance on the platform and any authenticated user could ask,
+  including a portal customer, who has no business reaching this route
+  at all. The role floor (`group_cloud_consultant`) is now checked
+  before the lookup; the per-record check that separates production
+  (manager) from the rest still runs afterwards, since it needs the
+  record to make that call. Found by the FINAL-001 pentest against
+  devel; every sibling delete route already gated first.
+
 ## [1.0.119] — 2026-09-08
 
 ### Added

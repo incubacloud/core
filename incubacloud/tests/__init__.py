@@ -133,3 +133,4 @@ from . import test_wildcard_domain_validation
 from . import test_metadata_leaks
 from . import test_neutralize
 from . import test_acme_store_prune
+from . import test_delete_instance_gate_order

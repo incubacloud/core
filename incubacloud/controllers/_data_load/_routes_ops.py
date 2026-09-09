@@ -389,6 +389,19 @@ class OpsMixin:
 
     @http.route(["/cloud/delete_instance"], type="jsonrpc", auth="user")
     def cloud_delete_instance(self, instance_id):
+        # The role floor is checked BEFORE ``exists()`` on purpose.
+        # ``exists()`` runs raw SQL — no ACL, no record rule — so
+        # answering "Instance not found" to a caller who may not delete
+        # anything turns this route into an id -> exists oracle over
+        # every instance on the platform, reachable by any authenticated
+        # user including a portal customer. Every sibling delete route
+        # gates first; this one did not.
+        #
+        # ``_check_can_delete_instance`` still runs below and is the one
+        # that decides: it needs the record to tell production (manager)
+        # from the rest (consultant), so only the floor of that decision
+        # can be checked this early.
+        self._sec()._check_cloud_group("group_cloud_consultant")
         inst = request.env["cloud.instance"].browse(instance_id)
         if not inst.exists():
             return {"ok": False, "error": _("Instance not found")}
