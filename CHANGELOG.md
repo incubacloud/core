@@ -6,6 +6,40 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.0.122] — 2026-09-10
+
+### Added
+
+- **A migration folder Odoo would never run now fails the suite.**
+  `tests/test_module_hygiene.py` walks every module in the repository
+  and refuses three shapes of migration that load, upgrade and test
+  green while doing nothing.
+
+  The one that prompted it: `migrate_module` executes a folder only
+  when `installed < folder <= manifest`, so adding
+  `migrations/1.0.N/post-migrate.py` without bumping the manifest in
+  the same commit strands the script permanently — bumping later does
+  not rescue it, because by then the module is installed at that
+  version and the left-hand comparison excludes it. Nothing anywhere
+  reports this: the module still loads, so CI cannot see it.
+
+  Two smaller variants of the same silence ride along: a folder name
+  `VERSION_RE` rejects, which `_verify_upgrade_version` drops with a
+  log warning nobody reads during an upgrade, and a folder holding no
+  file whose name starts with `pre-`, `post-` or `end-`, which is the
+  only kind Odoo collects.
+
+  The guard reuses Odoo's own `VERSION_RE`, `adapt_version` and
+  `parse_version`; only `convert_version` is reproduced, because it is
+  a closure inside `migrate_module`. `incubacloud_saas_manager` carries
+  its own copy so each repository guards its modules without its CI
+  depending on the other.
+
+  All 28 folders here and all 57 in saas pass today, so this is a
+  ratchet rather than a fix.
+
+---
+
 ## [1.0.121] — 2026-09-09
 
 ### Added
