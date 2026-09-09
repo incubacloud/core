@@ -12,6 +12,7 @@ from ..net.trusted_proxies import invalid_ranges, parse_ranges
 from .encrypted_char import EncryptedChar, EncryptedFieldMixin
 from .password_utils import (
     generate_password,
+    is_on_primary_key,
     key_is_configured,
     rotate_value,
 )
@@ -979,7 +980,65 @@ class CloudSettings(models.Model):
             _logger.info("Rotated encrypted secrets: %s", stats)
         else:
             _logger.info("Rotate pass complete: nothing to rotate.")
+        pending = self.rotation_pending_count()
+        _logger.info(
+            "Rotation status: %d value(s) still not on the primary key. "
+            "The old key may only be removed from %s once this is 0.",
+            pending['total'], 'INCUBACLOUD_SECRET_KEY',
+        )
         return stats
+
+    def rotation_pending_count(self):
+        """Return how many stored secrets are not on the primary key yet.
+
+        This is the number RB-01 needs and the ``rotated`` tally cannot
+        give: a rotation pass rewrites every row every time, because
+        Fernet tokens carry a timestamp and a random IV, so "how many
+        did I rewrite" never falls to zero no matter how many passes
+        run. Asking which key opens each ciphertext does converge, and
+        it is what says whether the old key can be retired safely.
+
+        Reads ciphertext with raw SQL, so no plaintext is materialised
+        and no ORM cache is disturbed. A value that cannot be read at
+        all counts as pending, which is the safe direction: it keeps
+        the old key in the chain rather than stranding the row.
+
+        :return: ``{'total': n, 'by_column': {'table.field': n, ...}}``,
+            with only the non-zero columns listed.
+        :rtype: dict
+        """
+        by_column = {}
+        total = 0
+        for Model in self.env.registry.values():
+            if Model._abstract or Model._transient:
+                continue
+            enc_fields = [
+                name for name, f in Model._fields.items()
+                if isinstance(f, EncryptedFieldMixin) and f.store
+            ]
+            if not enc_fields:
+                continue
+            for field_name in enc_fields:
+                self.env.cr.execute(
+                    sql.SQL(
+                        "SELECT id, {f} FROM {t} WHERE {f} LIKE 'enc:%%'"
+                    ).format(
+                        t=sql.Identifier(Model._table),
+                        f=sql.Identifier(field_name),
+                    )
+                )
+                stale = 0
+                for _rid, value in self.env.cr.fetchall():
+                    try:
+                        on_primary = is_on_primary_key(value, self.env)
+                    except Exception:  # noqa: BLE001
+                        on_primary = False
+                    if not on_primary:
+                        stale += 1
+                if stale:
+                    by_column[f"{Model._table}.{field_name}"] = stale
+                    total += stale
+        return {'total': total, 'by_column': by_column}
 
     def _rotate_encrypted_column(self, table, field_name, batch_size):
         """Rotate every ``enc:`` value in *table.field_name*.

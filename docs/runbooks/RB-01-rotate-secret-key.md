@@ -64,15 +64,40 @@ in progress)` at boot when more than one key is configured.
    Secrets (MultiFernet)" → set Active = True. It runs hourly and
    re-encrypts one batch per tick so nothing moves all at once.
 
-5. **Monitor progress** until every row is re-encrypted. A simple
-   way: grep the Odoo log for `rotate_value` calls, or count
-   ciphertext rows that still start with the old key's selector
-   (Fernet tokens encode the key id in the first bytes — any
-   row still decrypting under OLD will be rotated to NEW on next
-   write).
+5. **Monitor progress** with the pending count, and only with it:
 
-6. **Disable the rotation cron** once every encrypted row has been
-   rewritten.
+   ```python
+   env['cloud.settings']._get_system().rotation_pending_count()
+   # {'total': 0, 'by_column': {}}   ← done, safe to retire the old key
+   # {'total': 7, 'by_column': {'cloud_host.password': 7}}  ← not yet
+   ```
+
+   Every rotation pass also writes this line to the log:
+
+   ```
+   Rotation status: N value(s) still not on the primary key.
+   ```
+
+   > **Do not wait for the "rotated" tally to reach zero — it never
+   > will.** A Fernet token carries a timestamp and a random IV, so
+   > re-encrypting the same secret with the same key produces a
+   > different string every time. The sweep compares the new string
+   > with the old one, they never match, and it therefore rewrites
+   > every row on every pass for as long as the cron runs. Measured on
+   > 2026-09-09: two consecutive passes over the same six seeded
+   > secrets each reported 12 rotated values. That tally answers "how
+   > much did I rewrite", not "how much is left".
+   > `rotation_pending_count` asks which key opens each ciphertext,
+   > which is a property of the data, so it converges.
+   >
+   > A value nothing can decrypt counts as **pending**. That is
+   > deliberate: it keeps the old key in the chain instead of
+   > stranding the row. Investigate those before continuing — see
+   > *When a secret will not decrypt* below.
+
+6. **Disable the rotation cron** once `rotation_pending_count()` returns
+   `{'total': 0, ...}`. Anything else means at least one secret still
+   needs the old key, and step 7 would make it unreadable forever.
 
 7. **Remove the old key** from `INCUBACLOUD_SECRET_KEY`:
 

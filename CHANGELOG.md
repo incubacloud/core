@@ -6,6 +6,37 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.0.121] — 2026-09-09
+
+### Added
+
+- **A key rotation can now tell when it has finished.**
+  `cloud.settings.rotation_pending_count()` reports how many stored
+  secrets are still not encrypted with the primary key, per column and
+  in total, and every rotation pass logs that number.
+
+  The rotation already reported how many rows it rewrote, and RB-01 told
+  the operator to wait for that to reach zero before dropping the old
+  key. It never reaches zero: a Fernet token carries a timestamp and a
+  random IV, so re-encrypting the same secret with the same key yields a
+  different string, the sweep's "did it change?" guard always passes,
+  and every pass rewrites every row for as long as the cron runs.
+  Measured on devel: two consecutive passes over six seeded secrets
+  reported 12 rotated values each. An operator following the runbook
+  literally would either wait forever or retire the old key on a hunch —
+  and any value that had not moved becomes permanently unreadable. Those
+  values are host passwords and SSH keys.
+
+  Asking which key opens a ciphertext is a property of the data rather
+  than of the last write, so it converges. A value nothing can decrypt
+  counts as pending on purpose: that keeps the old key in the chain
+  instead of stranding the row. RB-01 step 5 rewritten around it.
+
+  Found by the FINAL-001 rotation drill, which is what the drill was
+  for. The sweep itself was correct throughout: it moved every value and
+  preserved all of them, and it does not disturb the instance config
+  hash (measured — the snapshot reads the decrypted value).
+
 ## [1.0.120] — 2026-09-09
 
 ### Fixed

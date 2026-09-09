@@ -209,6 +209,48 @@ def rotate_value(value, env=None):
     return f"{_ENCRYPTED_PREFIX}{new_token}"
 
 
+def is_on_primary_key(value, env=None):
+    """Return whether *value* is already encrypted with the primary key.
+
+    This is the question a key rotation actually has to answer, and
+    until now nothing could: the rotation counts how many rows it
+    *rewrote*, and it rewrites every row on every pass. Fernet puts a
+    timestamp and a random IV in each token, so re-encrypting the same
+    plaintext with the same key yields a different string every time
+    and the "rotated" tally never reaches zero. An operator following
+    RB-01 to the letter would wait forever for a number that cannot
+    converge — or drop the old key on a hunch, which strands whatever
+    had not moved yet, permanently.
+
+    Asking the ciphertext which key opens it converges, because it is a
+    property of the data rather than of the last write.
+
+    :param value: a stored ``enc:`` string. Empty and plain-text legacy
+        values return ``True``: there is nothing for a rotation to move,
+        so counting them as pending would never let it finish either.
+    :param env: optional Odoo environment, for the key lookup.
+    :return: ``True`` when the primary key alone can decrypt it.
+    :rtype: bool
+    """
+    if not value:
+        return True
+    if not (isinstance(value, str) and value.startswith(_ENCRYPTED_PREFIX)):
+        return True
+    f = _get_fernet(env)
+    if f is None:
+        raise IncubacloudCryptoError(_key_error_message())
+    # ``MultiFernet._fernets`` is the ordered chain; the first entry is
+    # the primary, the one ``encrypt`` uses. Decrypting with just that
+    # one is what separates "already moved" from "still on an old key".
+    primary = f._fernets[0]
+    token = value[len(_ENCRYPTED_PREFIX):].encode()
+    try:
+        primary.decrypt(token)
+    except Exception:  # noqa: BLE001 — any failure means "not primary"
+        return False
+    return True
+
+
 def generate_password(length=20):
     """Return a cryptographically strong URL-safe password (~27 chars for length=20)."""
     return secrets.token_urlsafe(length)
