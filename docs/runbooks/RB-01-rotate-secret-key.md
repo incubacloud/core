@@ -35,6 +35,32 @@ db$ SELECT
 `odoo log` will show `INCUBACLOUD_SECRET_KEY has N keys loaded (rotation
 in progress)` at boot when more than one key is configured.
 
+## Pre-flight — do this before anything else
+
+**Measure the pending count while the chain still holds one key.**
+
+```python
+env['cloud.settings']._get_system().rotation_pending_count()
+# {'total': 0, 'by_column': {}}   ← clear to start
+```
+
+With a single key configured this MUST be zero. Anything else is a
+value the *current* key cannot open, and it will still be there at
+step 6 — whose gate is this number reaching zero. Start a rotation
+with one of those inside and the gate never opens: you either wait
+forever, or you get tired and retire the old key while something
+legitimately still needs it.
+
+The 2026-09-10 rotation found exactly one:
+`cloud_instance(118).odoo_admin_user_password`, unreadable since April.
+It was dead data — that instance is the panel itself, it has no tenant
+attached, and the panel has no `admin` user at all — so regenerating it
+cost nothing. But had it been missed, step 6 would have been
+unreachable.
+
+Fix every row this reports before continuing; see *When a secret will
+not decrypt* below for how.
+
 ## Resolution
 
 1. **Generate the new primary key** (on your workstation, not on
@@ -95,9 +121,21 @@ in progress)` at boot when more than one key is configured.
    > stranding the row. Investigate those before continuing — see
    > *When a secret will not decrypt* below.
 
+   > **The token's timestamp is not evidence of anything.** Fernet
+   > stamps each token, but `MultiFernet.rotate` deliberately
+   > *preserves* the original stamp when it re-encrypts. After a
+   > successful rotation the tokens still read April, May, whenever
+   > they were first written. Reading those stamps and concluding the
+   > rotation never ran is a trap that cost real time on 10-sep. The
+   > only valid checks are `rotation_pending_count` and trying to
+   > decrypt with each key in the chain.
+
+
 6. **Disable the rotation cron** once `rotation_pending_count()` returns
    `{'total': 0, ...}`. Anything else means at least one secret still
    needs the old key, and step 7 would make it unreadable forever.
+   If it will not reach zero, you skipped the pre-flight: something was
+   already stranded before you started.
 
 7. **Remove the old key** from `INCUBACLOUD_SECRET_KEY`:
 
@@ -140,6 +178,16 @@ Rules:
 - **Verify the copies work.** A key you have never restored from is a
   key you are assuming works. The panel restore drill exercises this
   end to end.
+- **A retired key is kept, not destroyed.** Every backup taken before
+  the rotation holds ciphertext only the old key opens. Restore one
+  without it and all stored secrets are unreadable — including the
+  `cloud_host.key_file` rows, which are the only copy of those VPSs'
+  SSH key, so those machines become unreachable for good. Keep it in
+  custody labelled with the date it stopped being primary.
+- **Take a backup right after step 7.** Until one runs, no backup in
+  existence can be restored with the key the panel is now using. The
+  daily job closes this on its own within a day; triggering it closes
+  it in a minute.
 
 ## When a secret will not decrypt
 
