@@ -18,7 +18,7 @@ All commands assume you run them from the doodba checkout root
 | [RB-05](RB-05-triage-failed-job.md) | Triage a failed `queue.job` / `cloud.alert` | critical | `job_failed` alert in the Alerts panel |
 | [RB-06](RB-06-multi-worker-checklist.md) | Multi-worker deployment checklist | planned | Before enabling `workers>1` |
 | [RB-07](RB-07-webhook-replay-investigation.md) | Investigate a webhook replay | info | `GitHub webhook replay ignored` log line |
-| [RB-08](RB-08-rotate-cron-bot.md) | Rotate the cron bot user | critical | Bot credentials compromised |
+| [RB-08](RB-08-rotate-cron-bot.md) | The cron bot user | planned | A cron is not owned by the bot, or a credential was attached to it |
 | [RB-09](RB-09-docker-prune-failed.md) | `docker_prune` failed for a host | warning | Disk alert on host, failing prune cron |
 | [RB-10](RB-10-github-app-rate-limited.md) | GitHub App / PAT rate-limited or revoked | critical | Webhooks silent, `403`/`401` in logs |
 | [RB-11](RB-11-metrics-backend-unreachable.md) | Metrics backend unreachable — alerting is blind | critical | `metrics_backend_unreachable` alert, empty dashboards |

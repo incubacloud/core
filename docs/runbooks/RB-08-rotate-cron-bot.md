@@ -1,25 +1,43 @@
-# RB-08: Rotate the cron bot user
+# RB-08: The cron bot user
 
-**Severity:** critical
-**Typical trigger:** cron bot password / API key believed leaked,
-or periodic rotation after personnel change.
+**Severity:** planned
+**Typical trigger:** a review asks when the cron bot was last rotated,
+or a credential is added to it and later has to be revoked.
 **Who runs it:** ops + security.
 
 Every `ir.cron` from the `incubacloud*` modules runs as the cron bot
 user (login `__incubacloud_cron__`, created by the post-init hook).
-If that user's credentials leak, everything the bot can do — which
-is most of the write paths in the control plane — is reachable.
+It is the identity behind most of the write paths in the control
+plane: 53 scheduled actions in production as of 2026-09-10.
 
-Rotating the bot means: creating a fresh bot user, reassigning every
-cron to the new user, disabling the old one. Group membership is
-rebuilt from scratch via the existing helpers, so no manual ACL
-work is needed.
+> **Read this before rotating anything.** Until 2026-09-10 this runbook
+> described a credential rotation. It was wrong on all three counts,
+> and running it would have archived the control plane's identity
+> while changing nothing about security. What was measured:
+>
+> * **There is no credential to rotate.** The bot's `password` column
+>   is NULL and it owns zero `res.users.apikeys` rows. Nobody can
+>   authenticate as it; it exists only to be named by `ir_cron.user_id`.
+> * **Archiving it does not stop the crons.** `_get_all_ready_jobs`
+>   selects from `ir_cron` alone — it never joins `res_users` — and
+>   `_process_job` builds `api.Environment(cr, job['user_id'], {})`
+>   straight from the id, with no active check. Verified in devel: the
+>   bot was archived and a cron still ran.
+> * **`_incubacloud_ensure_cron_bot()` does not undo it.** On a user
+>   that already exists it *only aligns groups*. It does not reset a
+>   password and does not re-activate. So the old step 1 archived the
+>   bot, step 2 left it archived, and the old step 3's own check
+>   (`active = true`) would have failed with nothing in the procedure
+>   to fix it.
 
 ## Symptoms / triggers
 
-- Alert from secret scanner matching the bot's API key / password.
-- Suspected insider threat requiring credential rotation.
-- Scheduled rotation (annual).
+- A review asks who owns the scheduled actions, or whether any cron
+  slipped back to `uid=1`.
+- A module was added whose crons do not run: it probably never called
+  the provisioning hook.
+- A credential *was* attached to the bot (a password set by hand, an
+  API key issued for an integration) and now has to go.
 
 ## Diagnosis
 
@@ -36,88 +54,105 @@ db$ SELECT c.id, c.cron_name, c.user_id, u.login, c.active
 
 You should see exactly one `user_id` across all rows. If you see
 `uid=1` (OdooBot), the post-init hook did not run for a module —
-note which module and run the hook manually (below).
+note which module and run the hook (below).
+
+Confirm the bot still carries no credential:
+
+```sql
+db$ SELECT id, login, active, password IS NOT NULL AS has_password
+    FROM res_users WHERE login = '__incubacloud_cron__';
+db$ SELECT count(*) FROM res_users_apikeys
+    WHERE user_id = (SELECT id FROM res_users
+                     WHERE login = '__incubacloud_cron__');
+```
+
+`has_password = f` and `0` keys is the expected, healthy state.
 
 ## Resolution
 
-1. **Disable the old cron bot** first, so new crons don't start
-   under it during rotation:
+### A · A cron is not owned by the bot
 
-   ```sql
-   db$ UPDATE res_users SET active = false
-       WHERE login = '__incubacloud_cron__';
-   ```
+Re-run the provisioning hook for the module that owns it. This is
+idempotent and safe on a live system — it only adds group
+memberships and re-points `user_id`:
 
-   No running crons are interrupted by this; only future ticks fail
-   to acquire the lock. That's the behavior we want for the brief
-   rotation window.
+```python
+env['res.users']._incubacloud_ensure_cron_bot()
+for module in ('incubacloud',
+               'incubacloud_saas_manager',
+               'incubacloud_tenant'):
+    env['res.users']._incubacloud_assign_cron_user_id(
+        module_name=module,
+    )
+```
 
-2. **Trigger the provisioning hook** from `odoo shell` to create a
-   fresh bot (it renames the old login-collision aside if needed)
-   and reassign every cron:
+Then re-run the Diagnosis query: every row must show
+`__incubacloud_cron__`.
 
-   ```python
-   env['res.users']._incubacloud_ensure_cron_bot()
-   for module in ('incubacloud',
-                  'incubacloud_saas_manager',
-                  'incubacloud_tenant'):
-       env['res.users']._incubacloud_assign_cron_user_id(
-           module_name=module,
-       )
-   ```
+Smoke-test one cron:
 
-   `_incubacloud_ensure_cron_bot` is idempotent: if a bot with the
-   known login already exists and is active, it is reused; if
-   inactive, it is re-activated and its password reset via
-   `password_crypt`.
+```python
+env.ref('incubacloud.cron_cloud_terminal_route_gc').method_direct_trigger()
+```
 
-3. **Verify every cron now points at the new bot**:
+### B · A credential was attached to the bot and has to be revoked
 
-   ```sql
-   db$ SELECT c.cron_name, u.login
-       FROM ir_cron c
-       JOIN res_users u ON u.id = c.user_id
-       WHERE c.cron_name ILIKE '%incubacloud%';
-   ```
+This is the only case that is a rotation, and it is only reachable
+if somebody gave the bot a credential it does not ship with.
 
-   All rows must show `__incubacloud_cron__` with `active = true`.
+Revoke the API keys:
 
-4. **Smoke-test one cron** to confirm it runs under the new user:
+```sql
+db$ DELETE FROM res_users_apikeys
+    WHERE user_id = (SELECT id FROM res_users
+                     WHERE login = '__incubacloud_cron__');
+```
 
-   ```python
-   env.ref('incubacloud.cron_cloud_terminal_route_gc').method_direct_trigger()
-   ```
+Clear a hand-set password:
 
-   Then check `ir_cron.log` for a successful run entry.
+```sql
+db$ UPDATE res_users SET password = NULL
+    WHERE login = '__incubacloud_cron__';
+```
 
-5. **Purge the old bot** only if step 2 created a *new* user. Usually
-   the same login is reused and the password is reset in-place —
-   there is nothing to purge. If a previous rotation left an
-   `__incubacloud_cron__old` row behind, drop it:
+Neither touches `ir_cron`, so no scheduled action is interrupted:
+the crons name the user by id and never authenticate as it. Re-run
+the Diagnosis credential query; it must be back to `f` and `0`.
 
-   ```sql
-   db$ DELETE FROM res_users WHERE login = '__incubacloud_cron__old';
-   ```
+### C · You want a genuinely new identity
+
+Archiving the old bot and creating a new one is **not** supported by
+the current helpers: `_incubacloud_ensure_cron_bot` reuses the login
+and will not mint a second user. Doing it by hand means creating the
+user, granting the three groups
+(`incubacloud.group_cloud_manager`, `base.group_user`,
+`queue_job.group_queue_job_manager`), re-pointing all 53 crons, and
+moving the XML-id — and it buys nothing while the bot has no
+credential to compromise. Do not do it as hygiene. If a real reason
+appears, the helpers need to grow the capability first, with a test.
 
 ## Rollback
 
-If the new bot can't run crons (likely cause: a new module forgot
-to grant its groups to the bot via the provisioning hook), re-
-enable the old bot and investigate offline:
+Case A changes only group memberships and `ir_cron.user_id`; re-run
+it if in doubt, it is idempotent.
+
+Case B is a revocation, so there is nothing to roll back to — issue a
+fresh credential if the integration that used it still needs one.
+
+If you archived the bot following the pre-2026-09-10 version of this
+runbook, the crons kept running, but put it back anyway so the panel
+shows the identity correctly:
 
 ```sql
 db$ UPDATE res_users SET active = true
     WHERE login = '__incubacloud_cron__';
 ```
 
-Crons point at the same `user_id` either way (same login), so
-re-enabling is sufficient — no cron rewrites needed.
-
 ## References
 
 - [`models/res_users_ext.py`](../../incubacloud/models/res_users_ext.py)
   — `_incubacloud_ensure_cron_bot` + `_incubacloud_assign_cron_user_id`.
+  Read the first before assuming what it does to an existing user.
 - [`migrations/1.0.2/post-migrate.py`](../../incubacloud/migrations/1.0.2/post-migrate.py)
-  — upgrade-path counterpart of the post-init hook.
-- [RB-06](RB-06-multi-worker-checklist.md) — §4 audits cron
-  ownership for multi-worker readiness.
+- `odoo/addons/base/models/ir_cron.py` — `_get_all_ready_jobs` and
+  `_process_job`, which is where "archiving stops the crons" falls apart.
