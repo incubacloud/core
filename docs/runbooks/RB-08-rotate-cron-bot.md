@@ -8,7 +8,11 @@ or a credential is added to it and later has to be revoked.
 Every `ir.cron` from the `incubacloud*` modules runs as the cron bot
 user (login `__incubacloud_cron__`, created by the post-init hook).
 It is the identity behind most of the write paths in the control
-plane: 53 scheduled actions in production as of 2026-09-10.
+plane: 53 scheduled actions in production as of 2026-09-10, plus the
+OIDC signing-key rotation, which sat on uid 1 until
+`incubacloud_oidc_provider` 19.0.1.0.16 — its module never called the
+provisioning hook, and the old diagnosis query matched crons by name,
+which this one's does not contain.
 
 > **Read this before rotating anything.** Until 2026-09-10 this runbook
 > described a credential rotation. It was wrong on all three counts,
@@ -41,20 +45,23 @@ plane: 53 scheduled actions in production as of 2026-09-10.
 
 ## Diagnosis
 
-Inventory current cron ownership:
+Inventory current cron ownership, by the module that ships each cron
+— not by its name, which is how the OIDC rotation went unseen:
 
 ```sql
-db$ SELECT c.id, c.cron_name, c.user_id, u.login, c.active
+db$ SELECT d.module, c.id, c.cron_name, u.login, c.active
     FROM ir_cron c
+    JOIN ir_model_data d ON d.model = 'ir.cron' AND d.res_id = c.id
     JOIN res_users u ON u.id = c.user_id
-    WHERE c.cron_name ILIKE '%incubacloud%'
-       OR c.user_id IN (SELECT id FROM res_users
-                        WHERE login = '__incubacloud_cron__');
+    WHERE d.module LIKE 'incubacloud%'
+    ORDER BY d.module, c.id;
 ```
 
-You should see exactly one `user_id` across all rows. If you see
-`uid=1` (OdooBot), the post-init hook did not run for a module —
-note which module and run the hook (below).
+You should see `__incubacloud_cron__` on every row. If you see
+`uid=1` (OdooBot), the hook did not run for that module — run it
+(below), and if the module has no call to it at all, add one to its
+`post_init_hook` and a migration, as `incubacloud_oidc_provider`
+19.0.1.0.16 does.
 
 Confirm the bot still carries no credential:
 
@@ -74,12 +81,17 @@ db$ SELECT count(*) FROM res_users_apikeys
 
 Re-run the provisioning hook for the module that owns it. This is
 idempotent and safe on a live system — it only adds group
-memberships and re-points `user_id`:
+memberships, re-points `user_id` off uid 1, and scopes each bot-owned
+cron's server action to `incubacloud.group_cloud_manager`. Do not
+re-point `user_id` by hand instead: without that group, Odoo 19 refuses
+the action to any user who cannot write its model, and the bot
+deliberately cannot write most of them.
 
 ```python
 env['res.users']._incubacloud_ensure_cron_bot()
 for module in ('incubacloud',
                'incubacloud_saas_manager',
+               'incubacloud_oidc_provider',
                'incubacloud_tenant'):
     env['res.users']._incubacloud_assign_cron_user_id(
         module_name=module,
